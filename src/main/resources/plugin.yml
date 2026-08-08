@@ -1,0 +1,20 @@
+name: MagicChest
+version: ${version}
+main: cn.mythicland.magicchest.MagicChestPlugin
+author: ShanguanLinG
+load: POSTWORLD
+depend: [ Lib, DecentHolograms ]
+description: Virtual administrator-managed chests with scheduled refreshes.
+
+commands:
+  magicchest:
+    description: Manage MagicChest configuration.
+    aliases: [ mchest ]
+
+permissions:
+  magicchest.admin:
+    description: Allows MagicChest administration and chest editing.
+    default: op
+  magicchest.reload:
+    description: Allows reloading MagicChest configuration.
+    default: op
