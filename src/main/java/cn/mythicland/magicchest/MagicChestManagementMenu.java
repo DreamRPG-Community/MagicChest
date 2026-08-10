@@ -1,8 +1,7 @@
 package cn.mythicland.magicchest;
 
 import cn.mythicland.lib.container.ContainerAnimationHandle;
-import cn.mythicland.lib.menu.MenuService;
-import cn.mythicland.lib.menu.StatefulMenuView;
+import cn.mythicland.lib.menu.*;
 import cn.mythicland.lib.text.LegacyText;
 import cn.mythicland.magicchest.api.MagicChestKey;
 import cn.mythicland.magicchest.api.RefreshMode;
@@ -10,9 +9,8 @@ import cn.mythicland.magicchest.api.RefreshPolicy;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.ClickType;
-import org.bukkit.event.inventory.InventoryClickEvent;
-import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
 
 import java.util.List;
 import java.util.Objects;
@@ -24,7 +22,7 @@ import java.util.Objects;
  * lore contains the complete option list. The selected option is green with a triangle marker;
  * other options remain gray. Empty slots intentionally stay empty.</p>
  */
-final class MagicChestManagementMenu implements StatefulMenuView {
+final class MagicChestManagementMenu extends AnnotatedMenuView {
 
     private static final int REFRESH_ENABLED_SLOT = 10;
     private static final int SIZE_SLOT = 11;
@@ -79,118 +77,185 @@ final class MagicChestManagementMenu implements StatefulMenuView {
         return 27;
     }
 
-    @Override
-    public void render(Player player, Inventory inventory) {
+    @MenuButton(slot = REFRESH_ENABLED_SLOT)
+    private ItemStack refreshEnabledButton(Player player) {
         MagicChestRecord record = service.recordForMenu(key);
-        MagicChestSettings.Snapshot settings = service.settingsForMenu();
-        inventory.clear();
-
-        inventory.setItem(REFRESH_ENABLED_SLOT, MagicChestMenuItems.setting(
+        return MenuSelection.item(
                 Material.INK_SACK,
                 record.refreshEnabled() ? LIME_DYE_DATA : GRAY_DYE_DATA,
-                "箱子刷新",
+                "&a箱子刷新",
                 "选择是否启用该箱子的刷新功能。",
                 List.of("启用", "关闭"),
                 record.refreshEnabled() ? 0 : 1,
                 List.of()
-        ));
-        inventory.setItem(SIZE_SLOT, MagicChestMenuItems.setting(
+        );
+    }
+
+    @MenuButton(slot = SIZE_SLOT)
+    private ItemStack sizeButton(Player player) {
+        MagicChestRecord record = service.recordForMenu(key);
+        return MenuSelection.item(
                 Material.CHEST,
-                "箱子大小",
+                "&a箱子大小",
                 "选择虚拟箱子的容量。",
                 List.of("小箱子", "大箱子"),
                 record.size().slots() == 27 ? 0 : 1,
                 List.of()
-        ));
-        inventory.setItem(MODE_SLOT, MagicChestMenuItems.setting(
+        );
+    }
+
+    @MenuButton(slot = MODE_SLOT)
+    private ItemStack refreshModeButton(Player player) {
+        MagicChestRecord record = service.recordForMenu(key);
+        return MenuSelection.item(
                 Material.WATCH,
-                "刷新模式",
+                "&a刷新模式",
                 "选择箱子的刷新方式。",
                 List.of("定时刷新", "固定时间刷新", "始终刷新", "永不刷新"),
                 record.refreshMode().ordinal(),
                 List.of()
-        ));
+        );
+    }
+
+    @MenuButton(slot = TIME_SLOT)
+    private ItemStack refreshTimeButton(Player player) {
+        MagicChestRecord record = service.recordForMenu(key);
+        MagicChestSettings.Snapshot settings = service.settingsForMenu();
         if (record.refreshMode() == RefreshMode.INTERVAL) {
-            inventory.setItem(TIME_SLOT, MagicChestMenuItems.setting(
+            return MenuSelection.item(
                     Material.WATCH,
-                    "间隔刷新时间",
+                    "&a间隔刷新时间",
                     "选择定时刷新的间隔。",
                     displayOptions(settings.intervalOptions()),
                     selectedIndex(settings.intervalOptions(), record.intervalOption()),
                     List.of("&7自定义值: &f" + RefreshPolicy.formatInterval(settings.customInterval()))
-            ));
-        } else if (record.refreshMode() == RefreshMode.DAILY) {
-            inventory.setItem(TIME_SLOT, MagicChestMenuItems.setting(
+            );
+        }
+        if (record.refreshMode() == RefreshMode.DAILY) {
+            return MenuSelection.item(
                     Material.REDSTONE,
-                    "每日刷新时间",
+                    "&a每日刷新时间",
                     "选择每日固定刷新的时间。",
                     displayOptions(settings.dailyOptions()),
                     selectedIndex(settings.dailyOptions(), record.dailyOption()),
                     List.of("&7自定义值: &f" + settings.customDailyTime())
-            ));
+            );
         }
-        inventory.setItem(PARTICLE_SLOT, MagicChestMenuItems.setting(
+        return null;
+    }
+
+    @MenuButton(slot = PARTICLE_SLOT)
+    private ItemStack particleButton(Player player) {
+        MagicChestRecord record = service.recordForMenu(key);
+        MagicChestSettings.Snapshot settings = service.settingsForMenu();
+        return MenuSelection.item(
                 Material.BLAZE_POWDER,
-                "可领取粒子",
+                "&a可领取粒子",
                 "选择箱子可领取时的粒子效果。",
                 displayOptions(settings.particleOptions()),
                 selectedIndex(settings.particleOptions(), record.particle()),
                 List.of()
-        ));
-        inventory.setItem(HOLOGRAM_SLOT, MagicChestMenuItems.setting(
+        );
+    }
+
+    @MenuButton(slot = HOLOGRAM_SLOT)
+    private ItemStack hologramButton(Player player) {
+        MagicChestRecord record = service.recordForMenu(key);
+        return MenuSelection.item(
                 Material.NAME_TAG,
-                "悬浮字倒计时",
+                "&a悬浮字倒计时",
                 "选择是否显示箱子上方的倒计时。",
                 List.of("开启", "关闭"),
                 record.hologramEnabled() ? 0 : 1,
                 List.of()
-        ));
-        inventory.setItem(EDIT_SLOT, MagicChestMenuItems.button(
+        );
+    }
+
+    @MenuButton(slot = EDIT_SLOT)
+    private ItemStack editButton(Player player) {
+        MagicChestRecord record = service.recordForMenu(key);
+        return MenuItems.button(
                 record.editing() ? Material.REDSTONE_BLOCK : Material.EMERALD_BLOCK,
                 record.editing() ? "&a退出编辑模式" : "&a进入编辑模式",
                 record.editing()
                         ? List.of("&7保存当前草稿并立即刷新箱子。")
                         : List.of("&7打开虚拟编辑库存。")
-        ));
+        );
     }
 
-    @Override
-    public void handleClick(Player player, InventoryClickEvent event, MenuService menuService) {
-        event.setCancelled(true);
-        int slot = event.getRawSlot();
-        if (slot < 0 || slot >= size(player)) return;
-        ClickType click = event.getClick();
-        if (!isCycleClick(click)) return;
-        boolean next = click == ClickType.LEFT;
-        switch (slot) {
-            case REFRESH_ENABLED_SLOT -> service.toggleRefreshEnabled(player, key);
-            case SIZE_SLOT -> service.toggleSize(player, key);
-            case MODE_SLOT -> service.cycleRefreshMode(player, key, next);
-            case TIME_SLOT -> {
-                if (service.recordForMenu(key).refreshMode() == RefreshMode.INTERVAL) {
-                    service.cycleInterval(player, key, next);
-                } else if (service.recordForMenu(key).refreshMode() == RefreshMode.DAILY) {
-                    service.cycleDaily(player, key, next);
-                }
-            }
-            case PARTICLE_SLOT -> service.cycleParticle(player, key, next);
-            case HOLOGRAM_SLOT -> service.toggleHologram(player, key);
-            case EDIT_SLOT -> {
-                if (service.recordForMenu(key).editing()) service.exitEditing(player, key);
-                else service.enterEditing(player, key);
-            }
-            default -> {
-            }
+    @MenuAction(
+            slot = REFRESH_ENABLED_SLOT,
+            clicks = {ClickType.LEFT, ClickType.RIGHT},
+            playClickSound = true
+    )
+    private void toggleRefreshEnabled(Player player) {
+        service.toggleRefreshEnabled(player, key);
+    }
+
+    @MenuAction(
+            slot = SIZE_SLOT,
+            clicks = {ClickType.LEFT, ClickType.RIGHT},
+            playClickSound = true
+    )
+    private boolean toggleSize(Player player) {
+        return service.toggleSize(player, key);
+    }
+
+    @MenuAction(
+            slot = MODE_SLOT,
+            clicks = {ClickType.LEFT, ClickType.RIGHT},
+            playClickSound = true
+    )
+    private void cycleRefreshMode(Player player, ClickType click) {
+        service.cycleRefreshMode(player, key, MenuSelection.direction(click) > 0);
+    }
+
+    @MenuAction(
+            slot = TIME_SLOT,
+            clicks = {ClickType.LEFT, ClickType.RIGHT},
+            playClickSound = true
+    )
+    private boolean cycleRefreshTime(Player player, ClickType click) {
+        boolean next = MenuSelection.direction(click) > 0;
+        RefreshMode mode = service.recordForMenu(key).refreshMode();
+        if (mode == RefreshMode.INTERVAL) {
+            service.cycleInterval(player, key, next);
+            return true;
         }
+        if (mode == RefreshMode.DAILY) {
+            service.cycleDaily(player, key, next);
+            return true;
+        }
+        return false;
     }
 
-    static boolean isCycleClick(ClickType click) {
-        return click == ClickType.LEFT || click == ClickType.RIGHT;
+    @MenuAction(
+            slot = PARTICLE_SLOT,
+            clicks = {ClickType.LEFT, ClickType.RIGHT},
+            playClickSound = true
+    )
+    private void cycleParticle(Player player, ClickType click) {
+        service.cycleParticle(player, key, MenuSelection.direction(click) > 0);
     }
 
-    @Override
-    public void handleDrag(Player player, InventoryDragEvent event, MenuService menuService) {
-        event.setCancelled(true);
+    @MenuAction(
+            slot = HOLOGRAM_SLOT,
+            clicks = {ClickType.LEFT, ClickType.RIGHT},
+            playClickSound = true
+    )
+    private void toggleHologram(Player player) {
+        service.toggleHologram(player, key);
+    }
+
+    @MenuAction(
+            slot = EDIT_SLOT,
+            clicks = {ClickType.LEFT, ClickType.RIGHT},
+            playClickSound = true
+    )
+    private boolean toggleEditing(Player player) {
+        return service.recordForMenu(key).editing()
+                ? service.exitEditing(player, key)
+                : service.enterEditing(player, key);
     }
 
     @Override

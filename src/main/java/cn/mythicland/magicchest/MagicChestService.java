@@ -1,8 +1,8 @@
 package cn.mythicland.magicchest;
 
-import cn.mythicland.lib.api.LibApi;
 import cn.mythicland.lib.bootstrap.LibPluginLifecycle;
-import cn.mythicland.lib.bootstrap.annotation.InjectComponent;
+import cn.mythicland.lib.bootstrap.PluginTaskScope;
+import cn.mythicland.lib.bootstrap.annotation.LifecycleComponent;
 import cn.mythicland.lib.bootstrap.annotation.ListenerComponent;
 import cn.mythicland.lib.bootstrap.annotation.ServiceComponent;
 import cn.mythicland.lib.container.ContainerAnimationService;
@@ -62,7 +62,7 @@ import java.util.logging.Logger;
 /**
  * Main-thread MagicChest domain service.
  */
-@InjectComponent
+@LifecycleComponent
 @ListenerComponent
 @ServiceComponent(MagicChestApi.class)
 public final class MagicChestService implements MagicChestApi, Listener, LibPluginLifecycle {
@@ -70,7 +70,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     private static final String ADMIN_PERMISSION = "magicchest.admin";
     private static final String RELOAD_PERMISSION = "magicchest.reload";
 
-    private final LibApi lib;
+    private final PluginTaskScope tasks;
     private final MenuService menus;
     private final ContainerAnimationService animations;
     private final FloatingTextService floatingText;
@@ -90,7 +90,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
      * Creates the injected MagicChest service.
      */
     MagicChestService(
-            LibApi lib,
+            PluginTaskScope tasks,
             MenuService menus,
             ContainerAnimationService animations,
             FloatingTextService floatingText,
@@ -98,7 +98,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
             MagicChestStore store,
             Logger logger
     ) {
-        this.lib = Objects.requireNonNull(lib, "lib");
+        this.tasks = Objects.requireNonNull(tasks, "tasks");
         this.menus = Objects.requireNonNull(menus, "menus");
         this.animations = Objects.requireNonNull(animations, "animations");
         this.floatingText = Objects.requireNonNull(floatingText, "floatingText");
@@ -227,8 +227,8 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
                 record.recalculateNextRefresh(settings.snapshot(), Instant.now());
             }
         }
-        tickTask = lib.runTimer(1L, 20L, this::tick);
-        particleTask = lib.runTimer(1L, settings.snapshot().particleIntervalTicks(), this::renderParticles);
+        tickTask = tasks.runTimer(1L, 20L, this::tick);
+        particleTask = tasks.runTimer(1L, settings.snapshot().particleIntervalTicks(), this::renderParticles);
         tick();
         renderParticles();
     }
@@ -237,17 +237,17 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     public void reload() {
         settings.reload();
         for (MagicChestRecord record : store.all()) record.refreshPolicy(settings.snapshot());
-        if (particleTask != null) particleTask.cancel();
-        particleTask = lib.runTimer(1L, settings.snapshot().particleIntervalTicks(), this::renderParticles);
+        tasks.cancel(particleTask);
+        particleTask = tasks.runTimer(1L, settings.snapshot().particleIntervalTicks(), this::renderParticles);
         tick();
         renderParticles();
     }
 
     @Override
     public void disable() {
-        if (tickTask != null) tickTask.cancel();
+        tasks.cancel(tickTask);
         tickTask = null;
-        if (particleTask != null) particleTask.cancel();
+        tasks.cancel(particleTask);
         particleTask = null;
         for (UUID playerUniqueId : List.copyOf(openSessions.keySet())) {
             Player player = Bukkit.getPlayer(playerUniqueId);
@@ -309,31 +309,46 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         openClaim(player, block, record);
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    @EventHandler(
+            priority = EventPriority.HIGHEST,
+            ignoreCancelled = true
+    )
     public void onTeleport(PlayerTeleportEvent event) {
         if (openSessions.containsKey(event.getPlayer().getUniqueId())) menus.close(event.getPlayer());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(
+            priority = EventPriority.MONITOR,
+            ignoreCancelled = true
+    )
     public void onBreak(BlockBreakEvent event) {
         removeIfManaged(MagicChestKey.from(event.getBlock()), "箱子被破坏, MagicChest 管理记录已删除。", event.getPlayer());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(
+            priority = EventPriority.MONITOR,
+            ignoreCancelled = true
+    )
     public void onExplode(EntityExplodeEvent event) {
         for (Block block : List.copyOf(event.blockList())) {
             removeIfManaged(MagicChestKey.from(block), "箱子被爆炸破坏, MagicChest 管理记录已删除。", null);
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(
+            priority = EventPriority.MONITOR,
+            ignoreCancelled = true
+    )
     public void onPistonExtend(BlockPistonExtendEvent event) {
         for (Block block : event.getBlocks()) {
             removeIfManaged(MagicChestKey.from(block), "箱子被活塞移动, MagicChest 管理记录已删除。", null);
         }
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(
+            priority = EventPriority.MONITOR,
+            ignoreCancelled = true
+    )
     public void onPistonRetract(BlockPistonRetractEvent event) {
         for (Block block : event.getBlocks()) {
             removeIfManaged(MagicChestKey.from(block), "箱子被活塞移动, MagicChest 管理记录已删除。", null);
@@ -412,36 +427,37 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         }
     }
 
-    void enterEditing(Player player, MagicChestKey key) {
+    boolean enterEditing(Player player, MagicChestKey key) {
         requireAdmin(player);
         MagicChestRecord record = requireRecord(key);
         if (!record.refreshEnabled()) {
             player.sendMessage(LegacyText.colorize("&c请先启用箱子刷新, 再编辑虚拟箱子内容。"));
-            return;
+            return false;
         }
-        if (record.editing()) return;
+        if (record.editing()) return false;
         if (!activeClaimViewers(key).isEmpty()) {
             player.sendMessage(LegacyText.colorize("&c还有玩家正在领取, 请等待他们关闭箱子后再编辑。"));
-            return;
+            return false;
         }
         record.setDraft(record.templateCopy());
         record.setEditing(true);
         persist();
         refreshManagementMenus(key);
         player.sendMessage(LegacyText.colorize("&a已进入编辑模式。"));
+        return true;
     }
 
-    void exitEditing(Player player, MagicChestKey key) {
+    boolean exitEditing(Player player, MagicChestKey key) {
         requireAdmin(player);
         MagicChestRecord record = requireRecord(key);
-        if (!record.editing()) return;
+        if (!record.editing()) return false;
         if (record.editor() != null) {
             player.sendMessage(LegacyText.colorize("&c请先关闭编辑库存, 再退出编辑模式。"));
-            return;
+            return false;
         }
         if (!activeClaimViewers(key).isEmpty()) {
             player.sendMessage(LegacyText.colorize("&c还有玩家正在领取, 无法完成编辑。"));
-            return;
+            return false;
         }
         record.setTemplate(record.draftCopy());
         record.setEditing(false);
@@ -450,9 +466,10 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         updateDisplay(record, Instant.now());
         refreshManagementMenus(key);
         player.sendMessage(LegacyText.colorize("&a已退出编辑模式。"));
+        return true;
     }
 
-    void toggleSize(Player player, MagicChestKey key) {
+    boolean toggleSize(Player player, MagicChestKey key) {
         requireAdmin(player);
         MagicChestRecord record = requireRecord(key);
         MagicChestSize candidate = record.size() == MagicChestSize.SMALL
@@ -460,11 +477,12 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
                 : MagicChestSize.SMALL;
         if (candidate == MagicChestSize.SMALL && record.hasItemsOutside(candidate)) {
             player.sendMessage(LegacyText.colorize("&c大型箱子内第 28-54 格仍有物品, 无法切换。"));
-            return;
+            return false;
         }
         record.setSize(candidate);
         persist();
         menus.refresh(player);
+        return true;
     }
 
     void cycleRefreshMode(Player player, MagicChestKey key, boolean next) {

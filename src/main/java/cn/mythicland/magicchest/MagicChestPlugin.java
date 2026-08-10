@@ -16,6 +16,7 @@ public final class MagicChestPlugin extends JavaPlugin {
     private PluginBootstrap bootstrap;
 
     @Override
+    @SuppressWarnings("resource")
     public void onEnable() {
         try {
             LibApi lib = LibApi.require(this);

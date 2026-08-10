@@ -31,21 +31,26 @@ public record RefreshPolicy(
     /**
      * Validates the mode-specific fields.
      */
-    public RefreshPolicy {
-        mode = Objects.requireNonNull(mode, "mode");
-        if (mode == RefreshMode.INTERVAL) {
-            interval = Objects.requireNonNull(interval, "interval");
-            if (interval.isZero() || interval.isNegative()) {
+    public RefreshPolicy(RefreshMode mode, Duration interval, LocalTime dailyTime) {
+        RefreshMode validatedMode = Objects.requireNonNull(mode, "mode");
+        Duration validatedInterval;
+        LocalTime validatedDailyTime;
+        if (validatedMode == RefreshMode.INTERVAL) {
+            validatedInterval = Objects.requireNonNull(interval, "interval");
+            if (validatedInterval.isZero() || validatedInterval.isNegative()) {
                 throw new IllegalArgumentException("interval must be positive");
             }
-            dailyTime = null;
-        } else if (mode == RefreshMode.DAILY) {
-            dailyTime = Objects.requireNonNull(dailyTime, "dailyTime");
-            interval = null;
+            validatedDailyTime = null;
+        } else if (validatedMode == RefreshMode.DAILY) {
+            validatedDailyTime = Objects.requireNonNull(dailyTime, "dailyTime");
+            validatedInterval = null;
         } else {
-            interval = null;
-            dailyTime = null;
+            validatedInterval = null;
+            validatedDailyTime = null;
         }
+        this.mode = validatedMode;
+        this.interval = validatedInterval;
+        this.dailyTime = validatedDailyTime;
     }
 
     /**

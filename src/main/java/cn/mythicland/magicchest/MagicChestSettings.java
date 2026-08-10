@@ -93,6 +93,7 @@ final class MagicChestSettings {
         return List.copyOf(result);
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static List<String> requiredParticles(FileConfiguration configuration, String path) {
         List<String> particles = requiredStringList(
                 configuration,

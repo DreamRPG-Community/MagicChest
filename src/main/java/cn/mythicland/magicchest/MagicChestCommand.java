@@ -1,74 +1,28 @@
 package cn.mythicland.magicchest;
 
-import cn.mythicland.lib.api.LibApi;
-import cn.mythicland.lib.bootstrap.BukkitCommandComponent;
 import cn.mythicland.lib.bootstrap.annotation.CommandComponent;
-import cn.mythicland.lib.bootstrap.annotation.InjectComponent;
-import cn.mythicland.lib.command.CommandRouter;
-import cn.mythicland.lib.command.CommandUsageException;
-import cn.mythicland.lib.command.Subcommand;
+import cn.mythicland.lib.bootstrap.annotation.CommandHandler;
+import cn.mythicland.lib.command.CommandContext;
 import cn.mythicland.lib.text.LegacyText;
-import org.bukkit.command.CommandSender;
-import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.List;
 import java.util.Objects;
 
 /**
- * Registers MagicChest's administrative command tree.
+ * Handles MagicChest administrative commands.
  */
-@InjectComponent
-@CommandComponent
-final class MagicChestCommand implements BukkitCommandComponent {
+@CommandComponent("magicchest")
+final class MagicChestCommand {
 
-    private final CommandRouter router;
+    private final MagicChestPlugin plugin;
 
-    MagicChestCommand(JavaPlugin plugin, LibApi lib, MagicChestPlugin magicChestPlugin) {
-        this.router = Objects.requireNonNull(lib, "lib").createCommandRouter(plugin, "magicchest");
-        router.register(new ReloadCommand(magicChestPlugin));
+    MagicChestCommand(MagicChestPlugin plugin) {
+        this.plugin = Objects.requireNonNull(plugin, "plugin");
     }
 
-    @Override
-    public String commandName() {
-        return "magicchest";
-    }
-
-    @Override
-    public CommandRouter executor() {
-        return router;
-    }
-
-    @Override
-    public CommandRouter tabCompleter() {
-        return router;
-    }
-
-    private record ReloadCommand(MagicChestPlugin plugin) implements Subcommand {
-
-        private ReloadCommand {
-            plugin = Objects.requireNonNull(plugin, "plugin");
-        }
-
-        @Override
-        public String name() {
-            return "reload";
-        }
-
-        @Override
-        public String usage() {
-            return "/magicchest reload";
-        }
-
-        @Override
-        public String permission() {
-            return MagicChestService.reloadPermission();
-        }
-
-        @Override
-        public void execute(CommandSender sender, List<String> arguments) {
-            if (!arguments.isEmpty()) throw new CommandUsageException(usage());
-            plugin.reloadMagicChest();
-            sender.sendMessage(LegacyText.colorize("&aMagicChest 配置已重新加载。"));
-        }
+    @CommandHandler(value = "reload", permission = "magicchest.reload")
+    void reload(CommandContext context) {
+        context.requireArguments(0);
+        plugin.reloadMagicChest();
+        context.sender().sendMessage(LegacyText.colorize("&aMagicChest 配置已重新加载。"));
     }
 }

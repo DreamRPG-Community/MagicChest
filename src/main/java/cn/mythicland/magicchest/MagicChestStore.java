@@ -150,7 +150,7 @@ final class MagicChestStore implements AutoCloseable {
         }
         return new MagicChestRecord(
                 key,
-                optionalBoolean(chest, "refresh.enabled", false),
+                optionalBoolean(chest),
                 size,
                 mode,
                 requiredString(chest, "refresh.interval-option"),
@@ -236,10 +236,12 @@ final class MagicChestStore implements AutoCloseable {
         return result;
     }
 
-    private static boolean optionalBoolean(ConfigurationSection section, String path, boolean fallback) {
-        Object value = section.get(path);
-        if (value == null) return fallback;
-        if (!(value instanceof Boolean result)) throw new IllegalStateException("MagicChest data requires boolean: " + path);
+    private static boolean optionalBoolean(ConfigurationSection section) {
+        Object value = section.get("refresh.enabled");
+        if (value == null) return false;
+        if (!(value instanceof Boolean result)) {
+            throw new IllegalStateException("MagicChest data requires boolean: refresh.enabled");
+        }
         return result;
     }
 

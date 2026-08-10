@@ -35,6 +35,7 @@ final class MagicChestRecord {
     private ItemStack[] draft;
     private ItemStack[] liveContents;
 
+    @SuppressWarnings("SameParameterValue")
     MagicChestRecord(
             MagicChestKey key,
             boolean refreshEnabled,
@@ -66,6 +67,7 @@ final class MagicChestRecord {
         this.liveContents = fixedCopy(liveContents, "liveContents");
     }
 
+    @SuppressWarnings("SameParameterValue")
     MagicChestRecord(
             MagicChestKey key,
             MagicChestSize size,
@@ -201,6 +203,7 @@ final class MagicChestRecord {
         return nextRefreshEpochSecond;
     }
 
+    @SuppressWarnings("SameParameterValue")
     void setNextRefreshEpochSecond(long nextRefreshEpochSecond) {
         if (nextRefreshEpochSecond < 0L) {
             throw new IllegalArgumentException("nextRefreshEpochSecond cannot be negative");
