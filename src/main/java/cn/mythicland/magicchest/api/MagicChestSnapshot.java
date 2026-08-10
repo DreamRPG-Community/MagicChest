@@ -5,15 +5,15 @@ import java.util.Objects;
 /**
  * Read-only runtime snapshot of one managed chest.
  *
- * @param key                   chest identity
- * @param refreshEnabled        whether MagicChest intercepts the physical chest and refreshes it
- * @param size                  visible virtual inventory size
- * @param refreshPolicy         current refresh policy
- * @param particle              claimable particle option, or {@code NONE}
- * @param hologramEnabled       whether floating text is enabled
- * @param editing               whether the chest is in administrator edit mode
- * @param claimable             whether the authoritative live inventory contains an item
- * @param activeClaimViewers    number of players currently viewing the claim menu
+ * @param key                    chest identity
+ * @param refreshEnabled         whether MagicChest intercepts the physical chest and refreshes it
+ * @param size                   visible virtual inventory size
+ * @param refreshPolicy          current refresh policy
+ * @param particle               claimable particle option, or {@code NONE}
+ * @param hologramEnabled        whether floating text is enabled
+ * @param editing                whether the chest is in administrator edit mode
+ * @param claimable              whether the authoritative live inventory contains an item
+ * @param activeClaimViewers     number of players currently viewing the claim menu
  * @param nextRefreshEpochSecond next scheduled refresh in epoch seconds
  */
 public record MagicChestSnapshot(

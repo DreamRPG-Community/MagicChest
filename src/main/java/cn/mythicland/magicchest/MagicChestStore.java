@@ -19,12 +19,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.logging.Level;
@@ -53,6 +48,63 @@ final class MagicChestStore implements AutoCloseable {
         load();
     }
 
+    private static String requiredString(ConfigurationSection section, String path) {
+        Object value = section.get(path);
+        if (!(value instanceof String text) || text.isBlank()) {
+            throw new IllegalStateException("MagicChest data requires a non-empty string: " + path);
+        }
+        return text.trim();
+    }
+
+    private static boolean requiredBoolean(ConfigurationSection section, String path) {
+        Object value = section.get(path);
+        if (!(value instanceof Boolean result))
+            throw new IllegalStateException("MagicChest data requires boolean: " + path);
+        return result;
+    }
+
+    private static boolean optionalBoolean(ConfigurationSection section) {
+        Object value = section.get("refresh.enabled");
+        if (value == null) return false;
+        if (!(value instanceof Boolean result)) {
+            throw new IllegalStateException("MagicChest data requires boolean: refresh.enabled");
+        }
+        return result;
+    }
+
+    private static long requiredLong(ConfigurationSection section, String path) {
+        Object value = section.get(path);
+        if (!(value instanceof Number number))
+            throw new IllegalStateException("MagicChest data requires number: " + path);
+        long result = number.longValue();
+        if (result < 0L || number.doubleValue() != result) {
+            throw new IllegalStateException("MagicChest data requires non-negative integer: " + path);
+        }
+        return result;
+    }
+
+    private static <T extends Enum<T>> T enumValue(
+            ConfigurationSection section,
+            String path,
+            Class<T> type
+    ) {
+        String value = requiredString(section, path);
+        try {
+            return Enum.valueOf(type, value.toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalStateException("Unknown MagicChest value at " + path + ": " + value, exception);
+        }
+    }
+
+    private static Throwable unwrap(Throwable failure) {
+        Throwable current = failure;
+        while (current.getCause() != null
+                && (current instanceof CompletionException || current instanceof java.util.concurrent.ExecutionException)) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
     Collection<MagicChestRecord> all() {
         return List.copyOf(records.values());
     }
@@ -71,13 +123,14 @@ final class MagicChestStore implements AutoCloseable {
     }
 
     void save(Collection<MagicChestRecord> currentRecords) {
-        if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("MagicChest storage snapshots require the main thread");
+        if (!Bukkit.isPrimaryThread())
+            throw new IllegalStateException("MagicChest storage snapshots require the main thread");
         Map<String, Object> snapshot = serialize(currentRecords);
         synchronized (this) {
             lastWrite = lastWrite.handle((ignored, failure) -> {
-                if (failure != null) logger.log(Level.SEVERE, "Previous MagicChest storage write failed", failure);
-                return null;
-            }).thenCompose(ignored -> lib.runAsync(() -> writeSnapshot(snapshot)))
+                        if (failure != null) logger.log(Level.SEVERE, "Previous MagicChest storage write failed", failure);
+                        return null;
+                    }).thenCompose(ignored -> lib.runAsync(() -> writeSnapshot(snapshot)))
                     .whenComplete((ignored, failure) -> {
                         if (failure != null) {
                             logger.log(Level.SEVERE, "Failed to save MagicChest data", unwrap(failure));
@@ -216,64 +269,10 @@ final class MagicChestStore implements AutoCloseable {
     }
 
     private void validateFilePath() {
-        if (Files.isSymbolicLink(file)) throw new IllegalStateException("MagicChest data file is a symbolic link: " + file);
+        if (Files.isSymbolicLink(file))
+            throw new IllegalStateException("MagicChest data file is a symbolic link: " + file);
         if (Files.exists(file, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalStateException("MagicChest data path is not a regular file: " + file);
         }
-    }
-
-    private static String requiredString(ConfigurationSection section, String path) {
-        Object value = section.get(path);
-        if (!(value instanceof String text) || text.isBlank()) {
-            throw new IllegalStateException("MagicChest data requires a non-empty string: " + path);
-        }
-        return text.trim();
-    }
-
-    private static boolean requiredBoolean(ConfigurationSection section, String path) {
-        Object value = section.get(path);
-        if (!(value instanceof Boolean result)) throw new IllegalStateException("MagicChest data requires boolean: " + path);
-        return result;
-    }
-
-    private static boolean optionalBoolean(ConfigurationSection section) {
-        Object value = section.get("refresh.enabled");
-        if (value == null) return false;
-        if (!(value instanceof Boolean result)) {
-            throw new IllegalStateException("MagicChest data requires boolean: refresh.enabled");
-        }
-        return result;
-    }
-
-    private static long requiredLong(ConfigurationSection section, String path) {
-        Object value = section.get(path);
-        if (!(value instanceof Number number)) throw new IllegalStateException("MagicChest data requires number: " + path);
-        long result = number.longValue();
-        if (result < 0L || number.doubleValue() != result) {
-            throw new IllegalStateException("MagicChest data requires non-negative integer: " + path);
-        }
-        return result;
-    }
-
-    private static <T extends Enum<T>> T enumValue(
-            ConfigurationSection section,
-            String path,
-            Class<T> type
-    ) {
-        String value = requiredString(section, path);
-        try {
-            return Enum.valueOf(type, value.toUpperCase(java.util.Locale.ROOT));
-        } catch (IllegalArgumentException exception) {
-            throw new IllegalStateException("Unknown MagicChest value at " + path + ": " + value, exception);
-        }
-    }
-
-    private static Throwable unwrap(Throwable failure) {
-        Throwable current = failure;
-        while (current.getCause() != null
-                && (current instanceof CompletionException || current instanceof java.util.concurrent.ExecutionException)) {
-            current = current.getCause();
-        }
-        return current;
     }
 }

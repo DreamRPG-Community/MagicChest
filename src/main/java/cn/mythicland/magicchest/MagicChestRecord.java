@@ -1,10 +1,6 @@
 package cn.mythicland.magicchest;
 
-import cn.mythicland.magicchest.api.MagicChestKey;
-import cn.mythicland.magicchest.api.MagicChestSize;
-import cn.mythicland.magicchest.api.MagicChestSnapshot;
-import cn.mythicland.magicchest.api.RefreshMode;
-import cn.mythicland.magicchest.api.RefreshPolicy;
+import cn.mythicland.magicchest.api.*;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
 
@@ -60,7 +56,8 @@ final class MagicChestRecord {
         this.particle = Objects.requireNonNull(particle, "particle");
         this.hologramEnabled = hologramEnabled;
         this.editing = editing;
-        if (nextRefreshEpochSecond < 0L) throw new IllegalArgumentException("nextRefreshEpochSecond cannot be negative");
+        if (nextRefreshEpochSecond < 0L)
+            throw new IllegalArgumentException("nextRefreshEpochSecond cannot be negative");
         this.nextRefreshEpochSecond = nextRefreshEpochSecond;
         this.template = fixedCopy(template, "template");
         this.draft = fixedCopy(draft, "draft");
@@ -121,6 +118,38 @@ final class MagicChestRecord {
         );
         record.recalculateNextRefresh(settings, now);
         return record;
+    }
+
+    static ItemStack[] emptyContents() {
+        return new ItemStack[STORAGE_SIZE];
+    }
+
+    static ItemStack[] fixedCopy(ItemStack[] source, String fieldName) {
+        Objects.requireNonNull(source, fieldName);
+        if (source.length != STORAGE_SIZE) {
+            throw new IllegalArgumentException(fieldName + " must contain exactly " + STORAGE_SIZE + " slots");
+        }
+        return copyContents(source);
+    }
+
+    static ItemStack[] copyContents(ItemStack[] source) {
+        ItemStack[] copy = new ItemStack[source.length];
+        for (int index = 0; index < source.length; index++) copy[index] = cloneItem(source[index]);
+        return copy;
+    }
+
+    static boolean isEmpty(ItemStack item) {
+        return item == null || item.getType() == Material.AIR || item.getAmount() <= 0;
+    }
+
+    private static ItemStack cloneItem(ItemStack item) {
+        return isEmpty(item) ? null : item.clone();
+    }
+
+    private static String requireOption(String value, String fieldName) {
+        String text = Objects.requireNonNull(value, fieldName).trim();
+        if (text.isBlank()) throw new IllegalArgumentException(fieldName + " cannot be blank");
+        return text;
     }
 
     MagicChestKey key() {
@@ -308,38 +337,6 @@ final class MagicChestRecord {
                 claimViewers,
                 nextRefreshEpochSecond
         );
-    }
-
-    static ItemStack[] emptyContents() {
-        return new ItemStack[STORAGE_SIZE];
-    }
-
-    static ItemStack[] fixedCopy(ItemStack[] source, String fieldName) {
-        Objects.requireNonNull(source, fieldName);
-        if (source.length != STORAGE_SIZE) {
-            throw new IllegalArgumentException(fieldName + " must contain exactly " + STORAGE_SIZE + " slots");
-        }
-        return copyContents(source);
-    }
-
-    static ItemStack[] copyContents(ItemStack[] source) {
-        ItemStack[] copy = new ItemStack[source.length];
-        for (int index = 0; index < source.length; index++) copy[index] = cloneItem(source[index]);
-        return copy;
-    }
-
-    static boolean isEmpty(ItemStack item) {
-        return item == null || item.getType() == Material.AIR || item.getAmount() <= 0;
-    }
-
-    private static ItemStack cloneItem(ItemStack item) {
-        return isEmpty(item) ? null : item.clone();
-    }
-
-    private static String requireOption(String value, String fieldName) {
-        String text = Objects.requireNonNull(value, fieldName).trim();
-        if (text.isBlank()) throw new IllegalArgumentException(fieldName + " cannot be blank");
-        return text;
     }
 
     private void checkSlot(int slot) {

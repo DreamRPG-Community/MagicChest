@@ -4,9 +4,13 @@ package cn.mythicland.magicchest.api;
  * Virtual inventory sizes supported by MagicChest.
  */
 public enum MagicChestSize {
-    /** 27-slot small chest. */
+    /**
+     * 27-slot small chest.
+     */
     SMALL(27),
-    /** 54-slot large chest. */
+    /**
+     * 54-slot large chest.
+     */
     LARGE(54);
 
     private final int slots;

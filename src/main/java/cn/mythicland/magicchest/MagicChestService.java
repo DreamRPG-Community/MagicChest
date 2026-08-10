@@ -12,16 +12,8 @@ import cn.mythicland.lib.text.FloatingTextHandle;
 import cn.mythicland.lib.text.FloatingTextService;
 import cn.mythicland.lib.text.FloatingTextSpec;
 import cn.mythicland.lib.text.LegacyText;
-import cn.mythicland.magicchest.api.MagicChestApi;
-import cn.mythicland.magicchest.api.MagicChestKey;
-import cn.mythicland.magicchest.api.MagicChestSize;
-import cn.mythicland.magicchest.api.MagicChestSnapshot;
-import cn.mythicland.magicchest.api.RefreshMode;
-import org.bukkit.Bukkit;
-import org.bukkit.Location;
-import org.bukkit.Material;
-import org.bukkit.Particle;
-import org.bukkit.World;
+import cn.mythicland.magicchest.api.*;
+import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -34,27 +26,19 @@ import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.inventory.InventoryAction;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -78,6 +62,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     private final MagicChestStore store;
     private final Logger logger;
     private final Map<UUID, MagicChestKey> openSessions = new HashMap<>();
+    private final Map<UUID, MagicChestInventorySession> nativeInventorySessions = new HashMap<>();
     private final Map<MagicChestKey, Set<UUID>> managementViewers = new HashMap<>();
     private final Map<MagicChestKey, Set<UUID>> claimViewers = new HashMap<>();
     private final Map<MagicChestKey, FloatingTextHandle> holograms = new HashMap<>();
@@ -85,6 +70,8 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     private final Map<MagicChestKey, Location> hologramLocations = new HashMap<>();
     private BukkitTask tickTask;
     private BukkitTask particleTask;
+    private BukkitTask nativeFlushTask;
+    private MagicChestInventorySession pendingNativeMutation;
 
     /**
      * Creates the injected MagicChest service.
@@ -107,62 +94,11 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         this.logger = Objects.requireNonNull(logger, "logger");
     }
 
-    private static int halfAmount(ItemStack item) {
-        return MagicChestRecord.isEmpty(item) ? 1 : Math.max(1, (item.getAmount() + 1) / 2);
-    }
-
-    private static ItemStack addToPlayer(Player player, ItemStack item) {
-        PlayerInventory inventory = player.getInventory();
-        ItemStack[] contents = inventory.getStorageContents();
-        ItemStack[] before = MagicChestRecord.copyContents(contents);
-        ItemStack leftover = MagicChestInventoryTransfer.moveToPlayer(
-                contents,
-                item,
-                inventory.getMaxStackSize()
-        );
-        for (int slot = 0; slot < MagicChestInventoryTransfer.PLAYER_STORAGE_SIZE; slot++) {
-            if (!sameStack(before[slot], contents[slot])) inventory.setItem(slot, contents[slot]);
-        }
-        return leftover;
-    }
-
-    private static ItemStack insertIntoChest(MagicChestRecord record, ItemStack incoming) {
-        ItemStack remaining = incoming.clone();
-        for (int slot = 0; slot < record.size().slots() && !MagicChestRecord.isEmpty(remaining); slot++) {
-            ItemStack target = record.liveItem(slot);
-            if (MagicChestRecord.isEmpty(target) || !target.isSimilar(remaining)) continue;
-            int capacity = Math.max(0, target.getMaxStackSize() - target.getAmount());
-            int moved = Math.min(capacity, remaining.getAmount());
-            if (moved <= 0) continue;
-            target.setAmount(target.getAmount() + moved);
-            remaining.setAmount(remaining.getAmount() - moved);
-            record.setLiveItem(slot, target);
-        }
-        for (int slot = 0; slot < record.size().slots() && !MagicChestRecord.isEmpty(remaining); slot++) {
-            if (!MagicChestRecord.isEmpty(record.liveItem(slot))) continue;
-            int moved = Math.min(remaining.getAmount(), remaining.getMaxStackSize());
-            ItemStack placed = remaining.clone();
-            placed.setAmount(moved);
-            remaining.setAmount(remaining.getAmount() - moved);
-            record.setLiveItem(slot, placed);
-        }
-        return cloneOrNull(remaining);
-    }
-
     private static boolean sameStack(ItemStack first, ItemStack second) {
         if (MagicChestRecord.isEmpty(first) || MagicChestRecord.isEmpty(second)) {
             return MagicChestRecord.isEmpty(first) && MagicChestRecord.isEmpty(second);
         }
         return first.getAmount() == second.getAmount() && first.isSimilar(second);
-    }
-
-    private static ItemStack cloneOrNull(ItemStack item) {
-        return MagicChestRecord.isEmpty(item) ? null : item.clone();
-    }
-
-    private static int clampRequestedAmount(int requested, int available) {
-        if (available <= 0) return 0;
-        return Math.clamp(requested, 1, available);
     }
 
     private static boolean sameAnchor(Location first, Location second) {
@@ -193,7 +129,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         return options.get((index + direction) % options.size());
     }
 
-    private static ItemStack[] capture(org.bukkit.inventory.Inventory inventory) {
+    private static ItemStack[] capture(Inventory inventory) {
         ItemStack[] result = MagicChestRecord.emptyContents();
         ItemStack[] contents = inventory.getContents();
         if (contents.length > MagicChestRecord.STORAGE_SIZE) {
@@ -202,6 +138,50 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         for (int index = 0; index < contents.length; index++)
             result[index] = contents[index] == null ? null : contents[index].clone();
         return result;
+    }
+
+    private static ItemStack[] viewContents(ItemStack[] storageContents, int size) {
+        Objects.requireNonNull(storageContents, "storageContents");
+        if (storageContents.length != MagicChestRecord.STORAGE_SIZE) {
+            throw new IllegalArgumentException("storageContents must contain exactly 54 slots");
+        }
+        if (size < 0 || size > MagicChestRecord.STORAGE_SIZE) {
+            throw new IllegalArgumentException("size must be between 0 and 54");
+        }
+        ItemStack[] result = new ItemStack[size];
+        for (int index = 0; index < size; index++) {
+            result[index] = storageContents[index] == null ? null : storageContents[index].clone();
+        }
+        return result;
+    }
+
+    private static boolean sameContents(ItemStack[] first, ItemStack[] second) {
+        if (first.length != second.length) return false;
+        for (int index = 0; index < first.length; index++) {
+            if (!sameStack(first[index], second[index])) return false;
+        }
+        return true;
+    }
+
+    static boolean applyNativeChanges(
+            MagicChestRecord record,
+            ItemStack[] baseline,
+            ItemStack[] current
+    ) {
+        Objects.requireNonNull(record, "record");
+        Objects.requireNonNull(baseline, "baseline");
+        Objects.requireNonNull(current, "current");
+        if (baseline.length != MagicChestRecord.STORAGE_SIZE
+                || current.length != MagicChestRecord.STORAGE_SIZE) {
+            throw new IllegalArgumentException("native inventory snapshots must contain exactly 54 slots");
+        }
+        boolean changed = false;
+        for (int slot = 0; slot < record.size().slots(); slot++) {
+            if (sameStack(baseline[slot], current[slot])) continue;
+            record.setLiveItem(slot, current[slot]);
+            changed = true;
+        }
+        return changed;
     }
 
     static boolean isChest(Block block) {
@@ -215,6 +195,19 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
      */
     static String reloadPermission() {
         return RELOAD_PERMISSION;
+    }
+
+    private static boolean clickCanChangeTop(InventoryClickEvent event) {
+        int rawSlot = event.getRawSlot();
+        int topSize = event.getView().getTopInventory().getSize();
+        return rawSlot >= 0 && rawSlot < topSize
+                || event.getAction() == InventoryAction.MOVE_TO_OTHER_INVENTORY
+                || event.getAction() == InventoryAction.COLLECT_TO_CURSOR;
+    }
+
+    private static boolean dragCanChangeTop(InventoryDragEvent event) {
+        int topSize = event.getView().getTopInventory().getSize();
+        return event.getRawSlots().stream().anyMatch(slot -> slot >= 0 && slot < topSize);
     }
 
     @Override
@@ -235,7 +228,6 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
 
     @Override
     public void reload() {
-        settings.reload();
         for (MagicChestRecord record : store.all()) record.refreshPolicy(settings.snapshot());
         tasks.cancel(particleTask);
         particleTask = tasks.runTimer(1L, settings.snapshot().particleIntervalTicks(), this::renderParticles);
@@ -249,9 +241,14 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         tickTask = null;
         tasks.cancel(particleTask);
         particleTask = null;
+        cancelNativeFlush();
+        flushPendingNativeMutation();
+        for (MagicChestInventorySession session : List.copyOf(nativeInventorySessions.values())) {
+            finishNativeSession(session);
+        }
         for (UUID playerUniqueId : List.copyOf(openSessions.keySet())) {
             Player player = Bukkit.getPlayer(playerUniqueId);
-            if (player != null) menus.close(player);
+            if (player != null && menus.hasOpenMenu(playerUniqueId)) menus.close(player);
         }
         openSessions.clear();
         managementViewers.clear();
@@ -260,6 +257,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         holograms.clear();
         hologramSpecifications.clear();
         hologramLocations.clear();
+        persist();
         store.close();
     }
 
@@ -314,7 +312,36 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
             ignoreCancelled = true
     )
     public void onTeleport(PlayerTeleportEvent event) {
-        if (openSessions.containsKey(event.getPlayer().getUniqueId())) menus.close(event.getPlayer());
+        if (openSessions.containsKey(event.getPlayer().getUniqueId())) closeManagedSession(event.getPlayer());
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onNativeInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player) || event.isCancelled()) return;
+        MagicChestInventorySession session = nativeSession(event.getView().getTopInventory(), player.getUniqueId());
+        if (session == null || !clickCanChangeTop(event)) return;
+        if (!beginNativeMutation(session)) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onNativeInventoryDrag(InventoryDragEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player) || event.isCancelled()) return;
+        MagicChestInventorySession session = nativeSession(event.getView().getTopInventory(), player.getUniqueId());
+        if (session == null || !dragCanChangeTop(event)) return;
+        if (!beginNativeMutation(session)) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onNativeInventoryClose(InventoryCloseEvent event) {
+        if (!(event.getPlayer() instanceof Player player)) return;
+        MagicChestInventorySession session = nativeSession(event.getInventory(), player.getUniqueId());
+        if (session != null) finishNativeSession(session);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onNativePlayerQuit(PlayerQuitEvent event) {
+        MagicChestInventorySession session = nativeInventorySessions.get(event.getPlayer().getUniqueId());
+        if (session != null) finishNativeSession(session);
     }
 
     @EventHandler(
@@ -357,6 +384,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
 
     void openManagement(Player player, Block sourceBlock) {
         requireAdmin(player);
+        closeNativeInventory(player);
         MagicChestKey key = MagicChestKey.from(sourceBlock);
         MagicChestRecord record = store.find(key);
         if (record == null) {
@@ -379,14 +407,10 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
 
     private void openClaim(Player player, Block sourceBlock, MagicChestRecord record) {
         MagicChestKey key = record.key();
-        MagicChestClaimMenu menu = new MagicChestClaimMenu(this, key);
         try {
-            menus.open(player, menu);
-            openSessions.put(player.getUniqueId(), key);
-            claimViewers.computeIfAbsent(key, ignored -> new HashSet<>()).add(player.getUniqueId());
-            menu.attachAnimation(animations.open(sourceBlock, player, ContainerAnimationSpec.enderChest()));
+            openNativeInventory(player, key, sourceBlock, false, record.liveCopy());
         } catch (RuntimeException exception) {
-            menus.close(player);
+            closeNativeInventory(player);
             logger.log(Level.SEVERE, "Failed to open MagicChest claim menu", exception);
             player.sendMessage(LegacyText.colorize("&c箱子打开失败, 请查看服务端日志。"));
         }
@@ -413,13 +437,10 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         }
         record.setEditor(player.getUniqueId());
         persist();
-        MagicChestEditorMenu menu = new MagicChestEditorMenu(this, key);
         try {
-            menus.open(player, menu);
-            openSessions.put(player.getUniqueId(), key);
-            menu.attachAnimation(animations.open(sourceBlock, player, ContainerAnimationSpec.enderChest()));
+            openNativeInventory(player, key, sourceBlock, true, record.draftCopy());
         } catch (RuntimeException exception) {
-            menus.close(player);
+            closeNativeInventory(player);
             record.setEditor(null);
             persist();
             logger.log(Level.SEVERE, "Failed to open MagicChest editor", exception);
@@ -472,6 +493,10 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     boolean toggleSize(Player player, MagicChestKey key) {
         requireAdmin(player);
         MagicChestRecord record = requireRecord(key);
+        if (!activeClaimViewers(key).isEmpty() || record.editor() != null) {
+            player.sendMessage(LegacyText.colorize("&c请先关闭该箱子的其他库存界面, 再切换箱子大小。"));
+            return false;
+        }
         MagicChestSize candidate = record.size() == MagicChestSize.SMALL
                 ? MagicChestSize.LARGE
                 : MagicChestSize.SMALL;
@@ -504,15 +529,11 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         record.setRefreshEnabled(enabled);
         if (!enabled) {
             for (UUID playerUniqueId : List.copyOf(activeClaimViewers(key))) {
-                Player viewer = Bukkit.getPlayer(playerUniqueId);
-                if (viewer != null) menus.close(viewer);
+                closeNativeInventory(playerUniqueId);
             }
             claimViewers.remove(key);
             UUID editor = record.editor();
-            if (editor != null) {
-                Player editorPlayer = Bukkit.getPlayer(editor);
-                if (editorPlayer != null) menus.close(editorPlayer);
-            }
+            if (editor != null) closeNativeInventory(editor);
             record.setEditing(false);
             record.setEditor(null);
             record.setNextRefreshEpochSecond(0L);
@@ -568,10 +589,6 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         refreshManagementMenus(key);
     }
 
-    ItemStack[] liveContents(MagicChestKey key) {
-        return requireRecord(key).liveCopy();
-    }
-
     MagicChestRecord recordForMenu(MagicChestKey key) {
         return requireRecord(key);
     }
@@ -584,241 +601,193 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         return claimViewerCount(key);
     }
 
-    /**
-     * Applies one Bukkit click to the authoritative shared virtual inventory.
-     *
-     * <p>Lib cancels menu clicks before dispatching them here. Top-inventory actions are therefore
-     * applied explicitly, while ordinary clicks in the player's own inventory are released back
-     * to Bukkit. This keeps every viewer connected to one main-thread inventory without copying a
-     * stale view back over another viewer's changes.</p>
-     */
-    void handleClaimClick(Player player, MagicChestKey key, InventoryClickEvent event) {
+    private void openNativeInventory(
+            Player player,
+            MagicChestKey key,
+            Block sourceBlock,
+            boolean editor,
+            ItemStack[] contents
+    ) {
+        closeManagedSession(player);
         MagicChestRecord record = requireRecord(key);
-        InventoryAction action = event.getAction();
-        if (action == InventoryAction.DROP_ALL_CURSOR || action == InventoryAction.DROP_ONE_CURSOR) {
-            if (dropCursor(player, action == InventoryAction.DROP_ONE_CURSOR)) commitClaimMutation(record, key);
+        MagicChestInventoryHolder holder = new MagicChestInventoryHolder(
+                key,
+                player.getUniqueId(),
+                editor
+        );
+        Inventory inventory = Bukkit.createInventory(
+                holder,
+                record.size().slots(),
+                LegacyText.colorize(editor ? "&8箱子(编辑状态)" : "&8箱子")
+        );
+        holder.attach(inventory);
+        inventory.setContents(viewContents(contents, inventory.getSize()));
+        MagicChestInventorySession session = new MagicChestInventorySession(holder);
+        nativeInventorySessions.put(player.getUniqueId(), session);
+        openSessions.put(player.getUniqueId(), key);
+        if (!editor) claimViewers.computeIfAbsent(key, ignored -> new HashSet<>()).add(player.getUniqueId());
+        try {
+            player.openInventory(inventory);
+            session.attachAnimation(animations.open(sourceBlock, player, ContainerAnimationSpec.enderChest()));
+        } catch (RuntimeException exception) {
+            nativeInventorySessions.remove(player.getUniqueId(), session);
+            openSessions.remove(player.getUniqueId(), key);
+            claimViewers.computeIfPresent(key, (ignored, viewers) -> {
+                viewers.remove(player.getUniqueId());
+                return viewers.isEmpty() ? null : viewers;
+            });
+            session.closeAnimation();
+            throw exception;
+        }
+    }
+
+    private MagicChestInventorySession nativeSession(Inventory inventory, UUID viewerUniqueId) {
+        if (inventory == null || viewerUniqueId == null) return null;
+        if (!(inventory.getHolder() instanceof MagicChestInventoryHolder holder)) return null;
+        if (!viewerUniqueId.equals(holder.viewerUniqueId())) return null;
+        MagicChestInventorySession session = nativeInventorySessions.get(viewerUniqueId);
+        return session != null && session.holder() == holder ? session : null;
+    }
+
+    private boolean beginNativeMutation(MagicChestInventorySession session) {
+        if (pendingNativeMutation != null && pendingNativeMutation != session) return false;
+        session.beginMutation(capture(session.inventory()));
+        pendingNativeMutation = session;
+        if (nativeFlushTask == null) {
+            nativeFlushTask = tasks.runLater(1L, () -> {
+                nativeFlushTask = null;
+                flushPendingNativeMutation();
+            });
+        }
+        return true;
+    }
+
+    private void flushPendingNativeMutation() {
+        MagicChestInventorySession session = pendingNativeMutation;
+        pendingNativeMutation = null;
+        if (session == null) return;
+        if (nativeInventorySessions.get(session.holder().viewerUniqueId()) != session) {
+            session.clearMutation();
             return;
         }
-        if (action == InventoryAction.COLLECT_TO_CURSOR) {
-            if (collectToCursor(player, record)) commitClaimMutation(record, key);
+        MagicChestRecord record = store.find(session.holder().key());
+        if (record == null) {
+            session.clearMutation();
             return;
         }
+        boolean changed = captureNativeSession(session, record);
+        if (changed) commitNativeMutation(session, record);
+    }
 
-        int rawSlot = event.getRawSlot();
-        int topSize = event.getView().getTopInventory().getSize();
-        if (rawSlot >= 0 && rawSlot < topSize) {
-            if (applyTopClick(player, record, event)) commitClaimMutation(record, key);
-            return;
+    private boolean captureNativeSession(MagicChestInventorySession session, MagicChestRecord record) {
+        if (session.editor()) {
+            ItemStack[] current = capture(session.inventory());
+            ItemStack[] previous = record.draftCopy();
+            record.setDraft(current);
+            session.clearMutation();
+            return !sameContents(previous, current);
         }
-        if (action == InventoryAction.MOVE_TO_OTHER_INVENTORY) {
-            if (moveBottomToChest(record, event)) commitClaimMutation(record, key);
-            return;
-        }
-
-        // The click only concerns the player's inventory, so restore normal Bukkit handling.
-        event.setCancelled(false);
+        ItemStack[] baseline = session.pendingBaseline();
+        if (baseline == null) return false;
+        ItemStack[] current = capture(session.inventory());
+        session.clearMutation();
+        return applyNativeChanges(record, baseline, current);
     }
 
-    /**
-     * Applies a drag which touches the virtual chest. A drag confined to the player's inventory is
-     * released to Bukkit unchanged.
-     */
-    void handleClaimDrag(Player player, MagicChestKey key, InventoryDragEvent event) {
-        int topSize = event.getView().getTopInventory().getSize();
-        boolean touchesTop = false;
-        for (Integer rawSlot : event.getRawSlots()) {
-            if (rawSlot != null && rawSlot >= 0 && rawSlot < topSize) {
-                touchesTop = true;
-                break;
-            }
-        }
-        if (!touchesTop) {
-            event.setCancelled(false);
-            return;
-        }
-
-        MagicChestRecord record = requireRecord(key);
-        boolean changed = false;
-        for (Map.Entry<Integer, ItemStack> entry : event.getNewItems().entrySet()) {
-            int rawSlot = entry.getKey();
-            ItemStack item = cloneOrNull(entry.getValue());
-            if (rawSlot >= 0 && rawSlot < topSize && rawSlot < record.size().slots()) {
-                record.setLiveItem(rawSlot, item);
-                changed = true;
-            } else if (rawSlot >= topSize) {
-                event.getView().setItem(rawSlot, item);
-            }
-        }
-        player.setItemOnCursor(cloneOrNull(event.getCursor()));
-        if (changed) commitClaimMutation(record, key);
-        else player.updateInventory();
-    }
-
-    private boolean applyTopClick(Player player, MagicChestRecord record, InventoryClickEvent event) {
-        int slot = event.getSlot();
-        if (slot < 0 || slot >= record.size().slots()) return false;
-        return switch (event.getAction()) {
-            case PICKUP_ALL -> pickupFromChest(player, record, slot, Integer.MAX_VALUE);
-            case PICKUP_SOME, PICKUP_HALF -> pickupFromChest(player, record, slot, halfAmount(record.liveItem(slot)));
-            case PICKUP_ONE -> pickupFromChest(player, record, slot, 1);
-            case PLACE_ALL, PLACE_SOME -> placeInChest(player, record, slot, Integer.MAX_VALUE);
-            case PLACE_ONE -> placeInChest(player, record, slot, 1);
-            case SWAP_WITH_CURSOR -> swapWithCursor(player, record, slot);
-            case DROP_ALL_SLOT -> dropFromChest(player, record, slot, Integer.MAX_VALUE);
-            case DROP_ONE_SLOT -> dropFromChest(player, record, slot, 1);
-            case MOVE_TO_OTHER_INVENTORY -> moveTopToPlayer(player, record, slot);
-            case HOTBAR_SWAP, HOTBAR_MOVE_AND_READD -> swapWithHotbar(player, record, slot, event.getHotbarButton());
-            case CLONE_STACK -> cloneChestStack(player, record, slot);
-            default -> false;
-        };
-    }
-
-    private boolean pickupFromChest(Player player, MagicChestRecord record, int slot, int requested) {
-        if (!MagicChestRecord.isEmpty(player.getItemOnCursor())) return false;
-        ItemStack item = record.liveItem(slot);
-        if (MagicChestRecord.isEmpty(item)) return false;
-        int amount = clampRequestedAmount(requested, item.getAmount());
-        ItemStack taken = item.clone();
-        taken.setAmount(amount);
-        item.setAmount(item.getAmount() - amount);
-        player.setItemOnCursor(taken);
-        record.setLiveItem(slot, item);
-        return true;
-    }
-
-    private boolean placeInChest(Player player, MagicChestRecord record, int slot, int requested) {
-        ItemStack cursor = player.getItemOnCursor();
-        if (MagicChestRecord.isEmpty(cursor)) return false;
-        ItemStack target = record.liveItem(slot);
-        int amount;
-        if (MagicChestRecord.isEmpty(target)) {
-            amount = clampRequestedAmount(requested, cursor.getAmount());
-            ItemStack placed = cursor.clone();
-            placed.setAmount(amount);
-            record.setLiveItem(slot, placed);
-        } else {
-            if (!target.isSimilar(cursor)) return false;
-            int capacity = Math.max(0, target.getMaxStackSize() - target.getAmount());
-            amount = clampRequestedAmount(requested, capacity);
-            if (amount <= 0) return false;
-            target.setAmount(target.getAmount() + amount);
-            record.setLiveItem(slot, target);
-        }
-        cursor.setAmount(cursor.getAmount() - amount);
-        player.setItemOnCursor(cursor);
-        return true;
-    }
-
-    private boolean swapWithCursor(Player player, MagicChestRecord record, int slot) {
-        ItemStack cursor = player.getItemOnCursor();
-        ItemStack target = record.liveItem(slot);
-        if (MagicChestRecord.isEmpty(cursor) && MagicChestRecord.isEmpty(target)) return false;
-        record.setLiveItem(slot, cursor);
-        player.setItemOnCursor(target);
-        return true;
-    }
-
-    private boolean moveTopToPlayer(Player player, MagicChestRecord record, int slot) {
-        ItemStack item = record.liveItem(slot);
-        if (MagicChestRecord.isEmpty(item)) return false;
-        ItemStack leftover = addToPlayer(player, item);
-        if (sameStack(item, leftover)) return false;
-        record.setLiveItem(slot, leftover);
-        return true;
-    }
-
-    private boolean moveBottomToChest(MagicChestRecord record, InventoryClickEvent event) {
-        Inventory clicked = event.getClickedInventory();
-        if (clicked == null || clicked != event.getView().getBottomInventory()) return false;
-        int slot = event.getSlot();
-        if (slot < 0 || slot >= clicked.getSize()) return false;
-        ItemStack item = clicked.getItem(slot);
-        if (MagicChestRecord.isEmpty(item)) return false;
-        ItemStack leftover = insertIntoChest(record, item);
-        if (sameStack(item, leftover)) return false;
-        clicked.setItem(slot, leftover);
-        return true;
-    }
-
-    private boolean swapWithHotbar(Player player, MagicChestRecord record, int slot, int hotbarButton) {
-        if (hotbarButton < 0 || hotbarButton > 8) return false;
-        PlayerInventory inventory = player.getInventory();
-        ItemStack chest = record.liveItem(slot);
-        ItemStack hotbar = inventory.getItem(hotbarButton);
-        record.setLiveItem(slot, hotbar);
-        inventory.setItem(hotbarButton, chest);
-        return !sameStack(chest, hotbar);
-    }
-
-    private boolean cloneChestStack(Player player, MagicChestRecord record, int slot) {
-        ItemStack item = record.liveItem(slot);
-        if (MagicChestRecord.isEmpty(item)) return false;
-        ItemStack copy = item.clone();
-        copy.setAmount(copy.getMaxStackSize());
-        player.setItemOnCursor(copy);
-        return true;
-    }
-
-    private boolean dropFromChest(Player player, MagicChestRecord record, int slot, int requested) {
-        ItemStack item = record.liveItem(slot);
-        if (MagicChestRecord.isEmpty(item)) return false;
-        int amount = clampRequestedAmount(requested, item.getAmount());
-        ItemStack dropped = item.clone();
-        dropped.setAmount(amount);
-        player.getWorld().dropItemNaturally(player.getLocation(), dropped);
-        item.setAmount(item.getAmount() - amount);
-        record.setLiveItem(slot, item);
-        return true;
-    }
-
-    private boolean dropCursor(Player player, boolean one) {
-        ItemStack cursor = player.getItemOnCursor();
-        if (MagicChestRecord.isEmpty(cursor)) return false;
-        int amount = one ? 1 : cursor.getAmount();
-        ItemStack dropped = cursor.clone();
-        dropped.setAmount(amount);
-        player.getWorld().dropItemNaturally(player.getLocation(), dropped);
-        cursor.setAmount(cursor.getAmount() - amount);
-        player.setItemOnCursor(cursor);
-        return true;
-    }
-
-    private boolean collectToCursor(Player player, MagicChestRecord record) {
-        ItemStack cursor = player.getItemOnCursor();
-        if (MagicChestRecord.isEmpty(cursor)) return false;
-        int remaining = cursor.getMaxStackSize() - cursor.getAmount();
-        if (remaining <= 0) return false;
-        ItemStack target = cursor.clone();
-        boolean changed = false;
-        for (int slot = 0; slot < record.size().slots() && remaining > 0; slot++) {
-            ItemStack item = record.liveItem(slot);
-            if (MagicChestRecord.isEmpty(item) || !item.isSimilar(target)) continue;
-            int taken = Math.min(remaining, item.getAmount());
-            target.setAmount(target.getAmount() + taken);
-            item.setAmount(item.getAmount() - taken);
-            record.setLiveItem(slot, item);
-            remaining -= taken;
-            changed = true;
-        }
-        PlayerInventory inventory = player.getInventory();
-        for (int slot = 0; slot < 36 && remaining > 0; slot++) {
-            ItemStack item = inventory.getItem(slot);
-            if (MagicChestRecord.isEmpty(item) || !item.isSimilar(target)) continue;
-            int taken = Math.min(remaining, item.getAmount());
-            target.setAmount(target.getAmount() + taken);
-            item.setAmount(item.getAmount() - taken);
-            inventory.setItem(slot, item);
-            remaining -= taken;
-            changed = true;
-        }
-        if (changed) player.setItemOnCursor(target);
-        return changed;
-    }
-
-    private void commitClaimMutation(MagicChestRecord record, MagicChestKey key) {
+    private void commitNativeMutation(MagicChestInventorySession session, MagicChestRecord record) {
         persist();
-        refreshClaimMenus(key);
+        if (session.editor()) {
+            refreshManagementMenus(record.key());
+            return;
+        }
+        refreshClaimInventories(record.key());
         updateDisplay(record, Instant.now());
+    }
+
+    private void refreshClaimInventories(MagicChestKey key) {
+        MagicChestRecord record = store.find(key);
+        if (record == null) return;
+        ItemStack[] live = record.liveCopy();
+        for (MagicChestInventorySession session : List.copyOf(nativeInventorySessions.values())) {
+            if (session.editor() || !key.equals(session.holder().key())) continue;
+            Inventory inventory = session.inventory();
+            if (inventory.getSize() != record.size().slots()) continue;
+            inventory.setContents(viewContents(live, inventory.getSize()));
+            session.clearMutation();
+            Player player = Bukkit.getPlayer(session.holder().viewerUniqueId());
+            if (player != null && player.getOpenInventory().getTopInventory() == inventory) {
+                player.updateInventory();
+            }
+        }
+    }
+
+    private void cancelNativeFlush() {
+        tasks.cancel(nativeFlushTask);
+        nativeFlushTask = null;
+    }
+
+    private void finishNativeSession(MagicChestInventorySession session) {
+        UUID viewerUniqueId = session.holder().viewerUniqueId();
+        if (!nativeInventorySessions.remove(viewerUniqueId, session)) return;
+        if (pendingNativeMutation == session) {
+            cancelNativeFlush();
+            pendingNativeMutation = null;
+        }
+        MagicChestRecord record = store.find(session.holder().key());
+        boolean changed = record != null && captureNativeSession(session, record);
+        session.closeAnimation();
+        openSessions.remove(viewerUniqueId, session.holder().key());
+        if (session.editor()) {
+            if (record != null && viewerUniqueId.equals(record.editor())) {
+                record.setEditor(null);
+                persist();
+                refreshManagementMenus(record.key());
+            } else if (changed) {
+                persist();
+            }
+            return;
+        }
+        MagicChestKey key = session.holder().key();
+        Set<UUID> viewers = claimViewers.get(key);
+        if (viewers != null) {
+            viewers.remove(viewerUniqueId);
+            if (viewers.isEmpty()) claimViewers.remove(key);
+        }
+        record = store.find(key);
+        if (record == null) return;
+        Instant now = Instant.now();
+        boolean refreshed = viewersAreEmpty(key) && !record.editing() && record.isDue(now);
+        if (refreshed) record.refreshNow(settings.snapshot(), now);
+        if (changed || refreshed) {
+            persist();
+            refreshClaimInventories(key);
+            updateDisplay(record, now);
+        }
+    }
+
+    private void closeManagedSession(Player player) {
+        if (menus.hasOpenMenu(player.getUniqueId())) menus.close(player);
+        closeNativeInventory(player);
+    }
+
+    private void closeNativeInventory(Player player) {
+        MagicChestInventorySession session = nativeInventorySessions.get(player.getUniqueId());
+        if (session == null) return;
+        if (player.getOpenInventory().getTopInventory() == session.inventory()) {
+            player.closeInventory();
+        } else {
+            finishNativeSession(session);
+        }
+    }
+
+    private void closeNativeInventory(UUID viewerUniqueId) {
+        Player player = Bukkit.getPlayer(viewerUniqueId);
+        if (player != null) {
+            closeNativeInventory(player);
+            return;
+        }
+        MagicChestInventorySession session = nativeInventorySessions.get(viewerUniqueId);
+        if (session != null) finishNativeSession(session);
     }
 
     void onManagementClosed(Player player, MagicChestKey key) {
@@ -830,47 +799,12 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         }
     }
 
-    void onClaimClosed(Player player, MagicChestKey key) {
-        closeSession(player, key);
-        Set<UUID> viewers = claimViewers.get(key);
-        if (viewers != null) {
-            viewers.remove(player.getUniqueId());
-            if (viewers.isEmpty()) claimViewers.remove(key);
-        }
-        MagicChestRecord record = store.find(key);
-        if (record != null && viewersAreEmpty(key) && !record.editing() && record.isDue(Instant.now())) {
-            record.refreshNow(settings.snapshot(), Instant.now());
-            persist();
-            refreshClaimMenus(key);
-            updateDisplay(record, Instant.now());
-        }
-    }
-
-    void onEditorClosed(Player player, MagicChestKey key, org.bukkit.inventory.Inventory inventory) {
-        closeSession(player, key);
-        MagicChestRecord record = store.find(key);
-        if (record == null) return;
-        if (player.getUniqueId().equals(record.editor())) {
-            record.setDraft(capture(inventory));
-            record.setEditor(null);
-            persist();
-            refreshManagementMenus(key);
-        }
-    }
-
     private void closeSession(Player player, MagicChestKey key) {
         openSessions.remove(player.getUniqueId(), key);
     }
 
     private void refreshManagementMenus(MagicChestKey key) {
         for (UUID playerUniqueId : List.copyOf(managementViewers.getOrDefault(key, Set.of()))) {
-            Player player = Bukkit.getPlayer(playerUniqueId);
-            if (player != null) menus.refresh(player);
-        }
-    }
-
-    private void refreshClaimMenus(MagicChestKey key) {
-        for (UUID playerUniqueId : List.copyOf(activeClaimViewers(key))) {
             Player player = Bukkit.getPlayer(playerUniqueId);
             if (player != null) menus.refresh(player);
         }
@@ -1019,10 +953,13 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     }
 
     private void removeRecord(MagicChestKey key, String message, Player notify) {
+        for (MagicChestInventorySession session : List.copyOf(nativeInventorySessions.values())) {
+            if (key.equals(session.holder().key())) closeNativeInventory(session.holder().viewerUniqueId());
+        }
         for (UUID playerUniqueId : List.copyOf(openSessions.keySet())) {
             if (!key.equals(openSessions.get(playerUniqueId))) continue;
             Player player = Bukkit.getPlayer(playerUniqueId);
-            if (player != null) menus.close(player);
+            if (player != null && menus.hasOpenMenu(playerUniqueId)) menus.close(player);
         }
         closeHologram(key);
         store.remove(key);

@@ -1,90 +1,35 @@
 package cn.mythicland.magicchest;
 
-import cn.mythicland.lib.bootstrap.annotation.InjectComponent;
-import cn.mythicland.lib.config.ConfigSupport;
+import cn.mythicland.lib.bootstrap.annotation.ConfigComponent;
+import cn.mythicland.lib.config.ConfigValue;
+import cn.mythicland.lib.config.ConfigView;
+import cn.mythicland.lib.config.ConfigurableComponent;
 import cn.mythicland.magicchest.api.RefreshPolicy;
 import org.bukkit.Particle;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.plugin.java.JavaPlugin;
 
+import javax.annotation.Nonnull;
 import java.time.Duration;
 import java.time.LocalTime;
 import java.time.ZoneId;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Objects;
-import java.util.Set;
-import java.util.function.UnaryOperator;
+import java.util.*;
 
 /**
  * Loads and validates MagicChest's current configuration.
  */
-@InjectComponent
-final class MagicChestSettings {
+@ConfigComponent
+final class MagicChestSettings implements ConfigurableComponent {
 
-    private final JavaPlugin plugin;
     private volatile Snapshot snapshot;
 
-    MagicChestSettings(JavaPlugin plugin) {
-        this.plugin = Objects.requireNonNull(plugin, "plugin");
-        reload();
-    }
-
-    synchronized void reload() {
-        FileConfiguration configuration = ConfigSupport.loadDefault(plugin);
-        List<String> intervalOptions = requiredOptions(configuration, "refresh.interval-options", true);
-        List<String> dailyOptions = requiredOptions(configuration, "refresh.daily-options", false);
-        String customIntervalText = requiredString(configuration, "refresh.custom-interval");
-        String customDailyText = requiredString(configuration, "refresh.custom-daily-time");
-        Duration customInterval = RefreshPolicy.parseInterval(customIntervalText);
-        LocalTime customDailyTime = RefreshPolicy.parseDailyTime(customDailyText);
-        ZoneId zone;
-        try {
-            zone = ZoneId.of(requiredString(configuration, "refresh.time-zone"));
-        } catch (RuntimeException exception) {
-            throw new IllegalStateException("Invalid refresh.time-zone", exception);
-        }
-
-        List<String> particleOptions = requiredParticles(configuration, "particle.options");
-        int renderDistance = requiredPositiveInt(configuration, "particle.render-distance");
-        int particleIntervalTicks = requiredPositiveInt(configuration, "particle.interval-ticks");
-        int particleCount = requiredPositiveInt(configuration, "particle.count");
-        double hologramViewDistance = requiredPositiveDouble(configuration, "hologram.view-distance");
-        double lineSpacing = requiredPositiveDouble(configuration, "hologram.line-spacing");
-        double height = requiredPositiveDouble(configuration, "hologram.height");
-        snapshot = new Snapshot(
-                intervalOptions,
-                customInterval,
-                dailyOptions,
-                customDailyTime,
-                zone,
-                particleOptions,
-                renderDistance,
-                particleIntervalTicks,
-                particleCount,
-                hologramViewDistance,
-                lineSpacing,
-                height
-        );
-    }
-
-    Snapshot snapshot() {
-        Snapshot value = snapshot;
-        if (value == null) throw new IllegalStateException("MagicChest settings are not loaded");
-        return value;
-    }
-
     private static List<String> requiredOptions(
-            FileConfiguration configuration,
+            List<String> configuredValues,
             String path,
             boolean interval
     ) {
-        List<String> result = new ArrayList<>(requiredStringList(configuration, path, "option", String::trim));
-        if (!result.getLast().equalsIgnoreCase("custom")) {
-            throw new IllegalStateException(path + " must end with custom");
+        if (configuredValues == null || configuredValues.isEmpty()) {
+            throw new IllegalStateException(path + " must be a non-empty list");
         }
+        List<String> result = getStrings(configuredValues, path);
         for (String option : result.subList(0, result.size() - 1)) {
             if (interval) RefreshPolicy.parseInterval(option);
             else RefreshPolicy.parseDailyTime(option);
@@ -93,14 +38,37 @@ final class MagicChestSettings {
         return List.copyOf(result);
     }
 
+    @Nonnull
+    private static List<String> getStrings(List<String> configuredValues, String path) {
+        List<String> result = new ArrayList<>(configuredValues.size());
+        Set<String> seen = new HashSet<>();
+        for (String value : configuredValues) {
+            String normalized = value.trim();
+            if (!seen.add(normalized.toLowerCase(Locale.ROOT))) {
+                throw new IllegalStateException(path + " contains duplicate option: " + normalized);
+            }
+            result.add(normalized);
+        }
+        if (!result.getLast().equalsIgnoreCase("custom")) {
+            throw new IllegalStateException(path + " must end with custom");
+        }
+        return result;
+    }
+
     @SuppressWarnings("SameParameterValue")
-    private static List<String> requiredParticles(FileConfiguration configuration, String path) {
-        List<String> particles = requiredStringList(
-                configuration,
-                path,
-                "particle",
-                text -> text.toUpperCase(Locale.ROOT)
-        );
+    private static List<String> requiredParticles(List<String> configuredValues, String path) {
+        if (configuredValues == null || configuredValues.isEmpty()) {
+            throw new IllegalStateException(path + " must be a non-empty list");
+        }
+        List<String> particles = new ArrayList<>(configuredValues.size());
+        Set<String> seen = new HashSet<>();
+        for (String value : configuredValues) {
+            String particle = value.toUpperCase(Locale.ROOT);
+            if (!seen.add(particle.toLowerCase(Locale.ROOT))) {
+                throw new IllegalStateException(path + " contains duplicate particle: " + particle);
+            }
+            particles.add(particle);
+        }
         for (String particle : particles) {
             if (!particle.equals("NONE")) {
                 try {
@@ -110,60 +78,121 @@ final class MagicChestSettings {
                 }
             }
         }
-        return particles;
+        return List.copyOf(particles);
     }
 
-    private static List<String> requiredStringList(
-            FileConfiguration configuration,
-            String path,
-            String duplicateLabel,
-            UnaryOperator<String> normalizer
+    @Override
+    public synchronized void reload(ConfigView configuration) {
+        RawSettings raw = Objects.requireNonNull(configuration, "configuration")
+                .bind(RawSettings.class);
+        List<String> intervalOptions = requiredOptions(raw.intervalOptions(), "refresh.interval-options", true);
+        List<String> dailyOptions = requiredOptions(raw.dailyOptions(), "refresh.daily-options", false);
+        Duration customInterval = RefreshPolicy.parseInterval(raw.customInterval());
+        LocalTime customDailyTime = RefreshPolicy.parseDailyTime(raw.customDailyTime());
+        ZoneId zone;
+        try {
+            zone = ZoneId.of(raw.timeZone());
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("Invalid refresh.time-zone", exception);
+        }
+
+        List<String> particleOptions = requiredParticles(raw.particleOptions(), "particle.options");
+        snapshot = new Snapshot(
+                intervalOptions,
+                customInterval,
+                dailyOptions,
+                customDailyTime,
+                zone,
+                particleOptions,
+                raw.particleRenderDistance(),
+                raw.particleIntervalTicks(),
+                raw.particleCount(),
+                raw.hologramViewDistance(),
+                raw.hologramLineSpacing(),
+                raw.hologramHeight()
+        );
+    }
+
+    Snapshot snapshot() {
+        Snapshot value = snapshot;
+        if (value == null) throw new IllegalStateException("MagicChest settings are not loaded");
+        return value;
+    }
+
+    private record RawSettings(
+            @ConfigValue(
+                    path = "refresh.interval-options",
+                    defaultValue = "1m,5m,10m,30m,60m,custom",
+                    nonBlank = true
+            )
+            List<String> intervalOptions,
+            @ConfigValue(
+                    path = "refresh.custom-interval",
+                    defaultValue = "2h",
+                    nonBlank = true
+            )
+            String customInterval,
+            @ConfigValue(
+                    path = "refresh.daily-options",
+                    defaultValue = "00:00,08:00,12:00,18:00,custom",
+                    nonBlank = true
+            )
+            List<String> dailyOptions,
+            @ConfigValue(
+                    path = "refresh.custom-daily-time",
+                    defaultValue = "20:00",
+                    nonBlank = true
+            )
+            String customDailyTime,
+            @ConfigValue(
+                    path = "refresh.time-zone",
+                    defaultValue = "Asia/Shanghai",
+                    nonBlank = true
+            )
+            String timeZone,
+            @ConfigValue(
+                    path = "particle.options",
+                    defaultValue = "none,VILLAGER_HAPPY",
+                    nonBlank = true
+            )
+            List<String> particleOptions,
+            @ConfigValue(
+                    path = "particle.render-distance",
+                    defaultValue = "32",
+                    positive = true
+            )
+            int particleRenderDistance,
+            @ConfigValue(
+                    path = "particle.interval-ticks",
+                    defaultValue = "10",
+                    positive = true
+            )
+            int particleIntervalTicks,
+            @ConfigValue(
+                    path = "particle.count",
+                    defaultValue = "12",
+                    positive = true
+            )
+            int particleCount,
+            @ConfigValue(
+                    path = "hologram.view-distance",
+                    defaultValue = "32.0",
+                    positive = true
+            )
+            double hologramViewDistance,
+            @ConfigValue(
+                    path = "hologram.line-spacing",
+                    defaultValue = "0.25",
+                    positive = true
+            )
+            double hologramLineSpacing,
+            @ConfigValue(
+                    path = "hologram.height",
+                    defaultValue = "2.0",
+                    positive = true
+            )
+            double hologramHeight
     ) {
-        Object raw = configuration.get(path);
-        if (!(raw instanceof List<?> values) || values.isEmpty()) {
-            throw new IllegalStateException(path + " must be a non-empty list");
-        }
-        List<String> result = new ArrayList<>(values.size());
-        Set<String> seen = new HashSet<>();
-        for (Object value : values) {
-            if (!(value instanceof String text) || text.isBlank()) {
-                throw new IllegalStateException(path + " contains a non-string option");
-            }
-            String normalized = normalizer.apply(text.trim());
-            if (!seen.add(normalized.toLowerCase(Locale.ROOT))) {
-                throw new IllegalStateException(path + " contains duplicate " + duplicateLabel + ": " + normalized);
-            }
-            result.add(normalized);
-        }
-        return List.copyOf(result);
-    }
-
-    private static String requiredString(FileConfiguration configuration, String path) {
-        Object raw = configuration.get(path);
-        if (!(raw instanceof String value) || value.isBlank()) {
-            throw new IllegalStateException(path + " must be a non-empty string");
-        }
-        return value.trim();
-    }
-
-    private static int requiredPositiveInt(FileConfiguration configuration, String path) {
-        Object raw = configuration.get(path);
-        if (!(raw instanceof Number number)) throw new IllegalStateException(path + " must be a number");
-        int value = number.intValue();
-        if (value <= 0 || number.doubleValue() != value) {
-            throw new IllegalStateException(path + " must be a positive integer");
-        }
-        return value;
-    }
-
-    private static double requiredPositiveDouble(FileConfiguration configuration, String path) {
-        Object raw = configuration.get(path);
-        if (!(raw instanceof Number number)) throw new IllegalStateException(path + " must be a number");
-        double value = number.doubleValue();
-        if (!Double.isFinite(value) || value <= 0.0D) {
-            throw new IllegalStateException(path + " must be finite and positive");
-        }
-        return value;
     }
 
     /**

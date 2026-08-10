@@ -1,10 +1,6 @@
 package cn.mythicland.magicchest.api;
 
-import java.time.Duration;
-import java.time.Instant;
-import java.time.LocalTime;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
+import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.format.ResolverStyle;
 import java.util.Objects;
@@ -14,9 +10,9 @@ import java.util.regex.Pattern;
 /**
  * Immutable validated refresh policy.
  *
- * @param mode           scheduling mode
- * @param interval       interval duration, only used by interval mode
- * @param dailyTime      local daily time, only used by daily mode
+ * @param mode      scheduling mode
+ * @param interval  interval duration, only used by interval mode
+ * @param dailyTime local daily time, only used by daily mode
  */
 public record RefreshPolicy(
         RefreshMode mode,
@@ -135,6 +131,23 @@ public record RefreshPolicy(
     }
 
     /**
+     * Formats a duration using the configuration syntax instead of Java's {@code PT...} syntax.
+     *
+     * @param value positive duration
+     * @return compact interval such as {@code 2h}, {@code 5m}, or {@code 10s}
+     */
+    public static String formatInterval(Duration value) {
+        Duration duration = Objects.requireNonNull(value, "value");
+        if (duration.isZero() || duration.isNegative()) {
+            throw new IllegalArgumentException("interval must be positive");
+        }
+        long seconds = duration.toSeconds();
+        if (seconds % 3600L == 0L) return seconds / 3600L + "h";
+        if (seconds % 60L == 0L) return seconds / 60L + "m";
+        return seconds + "s";
+    }
+
+    /**
      * Calculates the next occurrence strictly after the supplied instant.
      *
      * @param now  current instant
@@ -163,22 +176,5 @@ public record RefreshPolicy(
         if (mode == RefreshMode.ALWAYS) return "始终刷新";
         if (mode == RefreshMode.NEVER) return "永不刷新";
         return formatInterval(interval);
-    }
-
-    /**
-     * Formats a duration using the configuration syntax instead of Java's {@code PT...} syntax.
-     *
-     * @param value positive duration
-     * @return compact interval such as {@code 2h}, {@code 5m}, or {@code 10s}
-     */
-    public static String formatInterval(Duration value) {
-        Duration duration = Objects.requireNonNull(value, "value");
-        if (duration.isZero() || duration.isNegative()) {
-            throw new IllegalArgumentException("interval must be positive");
-        }
-        long seconds = duration.toSeconds();
-        if (seconds % 3600L == 0L) return seconds / 3600L + "h";
-        if (seconds % 60L == 0L) return seconds / 60L + "m";
-        return seconds + "s";
     }
 }

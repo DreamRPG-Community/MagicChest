@@ -38,15 +38,6 @@ public record MagicChestKey(UUID worldId, int x, int y, int z) {
     }
 
     /**
-     * Returns the storage-safe textual key.
-     *
-     * @return {@code world-uuid:x:y:z}
-     */
-    public String encoded() {
-        return worldId + ":" + x + ":" + y + ":" + z;
-    }
-
-    /**
      * Parses a key produced by {@link #encoded()}.
      *
      * @param value encoded key
@@ -67,5 +58,14 @@ public record MagicChestKey(UUID worldId, int x, int y, int z) {
         } catch (RuntimeException exception) {
             throw new IllegalArgumentException("Invalid MagicChest key: " + value, exception);
         }
+    }
+
+    /**
+     * Returns the storage-safe textual key.
+     *
+     * @return {@code world-uuid:x:y:z}
+     */
+    public String encoded() {
+        return worldId + ":" + x + ":" + y + ":" + z;
     }
 }
