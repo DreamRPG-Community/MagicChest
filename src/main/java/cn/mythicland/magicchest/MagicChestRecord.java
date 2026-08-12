@@ -296,6 +296,10 @@ final class MagicChestRecord {
         draft = fixedCopy(contents, "draft");
     }
 
+    void setLiveContents(ItemStack[] contents) {
+        liveContents = fixedCopy(contents, "liveContents");
+    }
+
     ItemStack[] liveCopy() {
         return copyContents(liveContents);
     }

@@ -278,6 +278,160 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
                 .toList();
     }
 
+    /**
+     * Applies one external item reconciler while keeping template, draft, live contents, and
+     * open native inventories consistent. This method is intentionally package-private; callers
+     * use MagicChestItemSyncApi through Bukkit's ServicesManager.
+     */
+    MagicChestItemSyncReport synchronizeItems(MagicChestItemReconciler reconciler) {
+        requirePrimaryThread();
+        Objects.requireNonNull(reconciler, "reconciler");
+        flushPendingNativeMutation();
+
+        List<RecordSync> updates = new ArrayList<>();
+        int updatedTemplates = 0;
+        int updatedDrafts = 0;
+        int updatedLive = 0;
+        int updatedOpenInventories = 0;
+        int skippedUnmanaged = 0;
+        int stale = 0;
+
+        for (MagicChestRecord record : store.all()) {
+            ItemStack[] oldTemplate = record.templateCopy();
+            ItemStack[] draft = record.draftCopy();
+            ItemStack[] live = record.liveCopy();
+            ItemStack[] oldDraft = record.draftCopy();
+            ItemStack[] oldLive = record.liveCopy();
+            ItemStack[] template = record.templateCopy();
+            boolean recordChanged = false;
+
+            for (int slot = 0; slot < MagicChestRecord.STORAGE_SIZE; slot++) {
+                ItemStack templateItem = oldTemplate[slot];
+                if (!MagicChestRecord.isEmpty(templateItem)) {
+                    MagicChestItemSyncDecision decision = Objects.requireNonNull(
+                            reconciler.reconcile(templateItem.clone(), MagicChestItemSyncMode.TEMPLATE),
+                            "reconciler decision"
+                    );
+                    if (decision.status() == MagicChestItemSyncStatus.UPDATED && decision.replacement() != null) {
+                        template[slot] = decision.replacement();
+                        updatedTemplates++;
+                        recordChanged = true;
+                    } else {
+                        SkipCounts counters = countSkipped(decision.status());
+                        skippedUnmanaged += counters.unmanaged();
+                        stale += counters.stale();
+                    }
+                }
+
+                // A draft slot is eligible only while it still equals the old template. Any
+                // administrator edit, including amount or visible metadata, wins over sync.
+                if (!MagicChestRecord.isEmpty(draft[slot]) && sameStack(oldTemplate[slot], draft[slot])) {
+                    MagicChestItemSyncDecision decision = Objects.requireNonNull(
+                            reconciler.reconcile(draft[slot].clone(), MagicChestItemSyncMode.TEMPLATE),
+                            "reconciler decision"
+                    );
+                    if (decision.status() == MagicChestItemSyncStatus.UPDATED && decision.replacement() != null) {
+                        draft[slot] = decision.replacement();
+                        updatedDrafts++;
+                        recordChanged = true;
+                    } else {
+                        SkipCounts counters = countSkipped(decision.status());
+                        skippedUnmanaged += counters.unmanaged();
+                        stale += counters.stale();
+                    }
+                }
+
+                if (!MagicChestRecord.isEmpty(live[slot])) {
+                    MagicChestItemSyncDecision decision = Objects.requireNonNull(
+                            reconciler.reconcile(live[slot].clone(), MagicChestItemSyncMode.EXISTING_INSTANCE),
+                            "reconciler decision"
+                    );
+                    if (decision.status() == MagicChestItemSyncStatus.UPDATED && decision.replacement() != null) {
+                        live[slot] = decision.replacement();
+                        updatedLive++;
+                        recordChanged = true;
+                    } else {
+                        SkipCounts counters = countSkipped(decision.status());
+                        skippedUnmanaged += counters.unmanaged();
+                        stale += counters.stale();
+                    }
+                }
+            }
+
+            updates.add(new RecordSync(record, oldTemplate, oldDraft, oldLive,
+                    template, draft, live, recordChanged));
+        }
+
+        try {
+            for (RecordSync update : updates) {
+                update.record().setTemplate(update.template());
+                update.record().setDraft(update.draft());
+                update.record().setLiveContents(update.live());
+            }
+            for (RecordSync update : updates) {
+                if (update.changed()) {
+                    updatedOpenInventories += updateOpenInventories(
+                            update.record(), update.live(), update.draft()
+                    );
+                }
+            }
+
+            if (updatedTemplates > 0 || updatedDrafts > 0 || updatedLive > 0 || updatedOpenInventories > 0) {
+                persist();
+            }
+        } catch (RuntimeException exception) {
+            rollback(updates, exception);
+            throw exception;
+        }
+        return new MagicChestItemSyncReport(
+                updates.size(), updatedTemplates, updatedDrafts, updatedLive,
+                updatedOpenInventories, skippedUnmanaged, stale
+        );
+    }
+
+    private void rollback(List<RecordSync> updates, RuntimeException failure) {
+        try {
+            for (RecordSync update : updates) {
+                update.record().setTemplate(update.oldTemplate());
+                update.record().setDraft(update.oldDraft());
+                update.record().setLiveContents(update.oldLive());
+            }
+            for (RecordSync update : updates) {
+                if (update.changed()) updateOpenInventories(
+                        update.record(), update.oldLive(), update.oldDraft()
+                );
+            }
+        } catch (RuntimeException rollbackFailure) {
+            failure.addSuppressed(rollbackFailure);
+        }
+    }
+
+    private SkipCounts countSkipped(MagicChestItemSyncStatus status) {
+        return switch (status) {
+            case UNMANAGED -> new SkipCounts(1, 0);
+            case STALE -> new SkipCounts(0, 1);
+            case CURRENT, UPDATED -> new SkipCounts(0, 0);
+        };
+    }
+
+    private int updateOpenInventories(MagicChestRecord record, ItemStack[] live, ItemStack[] draft) {
+        int updated = 0;
+        for (MagicChestInventorySession session : List.copyOf(nativeInventorySessions.values())) {
+            if (!record.key().equals(session.holder().key())) continue;
+            ItemStack[] contents = session.editor() ? draft : live;
+            Inventory inventory = session.inventory();
+            if (inventory.getSize() != record.size().slots()) continue;
+            inventory.setContents(viewContents(contents, inventory.getSize()));
+            session.clearMutation();
+            updated++;
+            Player player = Bukkit.getPlayer(session.holder().viewerUniqueId());
+            if (player != null && player.getOpenInventory().getTopInventory() == inventory) {
+                player.updateInventory();
+            }
+        }
+        return updated;
+    }
+
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onInteract(PlayerInteractEvent event) {
         if (event.getHand() != null && event.getHand() != EquipmentSlot.HAND) return;
@@ -947,6 +1101,12 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         store.save(store.all());
     }
 
+    private void requirePrimaryThread() {
+        if (!Bukkit.isPrimaryThread()) {
+            throw new IllegalStateException("MagicChest API must run on Bukkit's primary thread");
+        }
+    }
+
     private void removeIfManaged(MagicChestKey key, String message, Player notify) {
         if (store.find(key) == null) return;
         removeRecord(key, message, notify);
@@ -966,6 +1126,21 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         claimViewers.remove(key);
         persist();
         if (notify != null) notify.sendMessage(LegacyText.colorize("&a" + message));
+    }
+
+    private record SkipCounts(int unmanaged, int stale) {
+    }
+
+    private record RecordSync(
+            MagicChestRecord record,
+            ItemStack[] oldTemplate,
+            ItemStack[] oldDraft,
+            ItemStack[] oldLive,
+            ItemStack[] template,
+            ItemStack[] draft,
+            ItemStack[] live,
+            boolean changed
+    ) {
     }
 
 }
