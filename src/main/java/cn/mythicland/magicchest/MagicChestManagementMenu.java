@@ -1,6 +1,5 @@
 package cn.mythicland.magicchest;
 
-import cn.mythicland.lib.container.ContainerAnimationHandle;
 import cn.mythicland.lib.menu.*;
 import cn.mythicland.lib.text.LegacyText;
 import cn.mythicland.magicchest.api.MagicChestKey;
@@ -31,12 +30,12 @@ final class MagicChestManagementMenu extends AnnotatedMenuView {
     private static final int PARTICLE_SLOT = 14;
     private static final int HOLOGRAM_SLOT = 15;
     private static final int EDIT_SLOT = 16;
+    private static final int BACK_SLOT = 26;
     private static final short GRAY_DYE_DATA = 8;
     private static final short LIME_DYE_DATA = 10;
 
     private final MagicChestService service;
     private final MagicChestKey key;
-    private ContainerAnimationHandle animation;
     private boolean closed;
 
     MagicChestManagementMenu(
@@ -60,11 +59,6 @@ final class MagicChestManagementMenu extends AnnotatedMenuView {
         if ("custom".equalsIgnoreCase(option)) return "自定义";
         if ("NONE".equalsIgnoreCase(option)) return "无";
         return option;
-    }
-
-    void attachAnimation(ContainerAnimationHandle animation) {
-        if (this.animation != null) throw new IllegalStateException("MagicChest animation already attached");
-        this.animation = Objects.requireNonNull(animation, "animation");
     }
 
     @Override
@@ -183,6 +177,13 @@ final class MagicChestManagementMenu extends AnnotatedMenuView {
         );
     }
 
+    @MenuButton(slot = BACK_SLOT)
+    private ItemStack backButton() {
+        return MenuItems.button(Material.ARROW, "&e返回总管理面板", List.of(
+                "&7返回总管理面板。"
+        ));
+    }
+
     @MenuAction(
             slot = REFRESH_ENABLED_SLOT,
             clicks = {ClickType.LEFT, ClickType.RIGHT},
@@ -258,6 +259,15 @@ final class MagicChestManagementMenu extends AnnotatedMenuView {
                 : service.enterEditing(player, key);
     }
 
+    @MenuAction(
+            slot = BACK_SLOT,
+            clicks = {ClickType.LEFT, ClickType.RIGHT},
+            playClickSound = false
+    )
+    private void back(Player player) {
+        service.openAdminOverview(player, key);
+    }
+
     @Override
     public void onClose(Player player, Inventory inventory) {
         finish(player);
@@ -271,7 +281,6 @@ final class MagicChestManagementMenu extends AnnotatedMenuView {
     private void finish(Player player) {
         if (closed) return;
         closed = true;
-        if (animation != null) animation.close();
         service.onManagementClosed(player, key);
     }
 }

@@ -63,6 +63,14 @@ final class MagicChestStore implements AutoCloseable {
         return result;
     }
 
+    private static UUID playerUniqueId(String value, String path) {
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalStateException("MagicChest data requires a UUID key: " + path, exception);
+        }
+    }
+
     private static boolean optionalBoolean(ConfigurationSection section) {
         Object value = section.get("refresh.enabled");
         if (value == null) return false;
@@ -201,7 +209,7 @@ final class MagicChestStore implements AutoCloseable {
                 throw new IllegalStateException("Unknown MagicChest particle: " + particle, exception);
             }
         }
-        return new MagicChestRecord(
+        MagicChestRecord record = new MagicChestRecord(
                 key,
                 optionalBoolean(chest),
                 size,
@@ -216,6 +224,18 @@ final class MagicChestStore implements AutoCloseable {
                 decode(chest, "draft"),
                 decode(chest, "live")
         );
+        ConfigurationSection playerContents = chest.getConfigurationSection("player-contents");
+        if (playerContents != null) {
+            Map<UUID, ItemStack[]> contentsByPlayer = new LinkedHashMap<>();
+            for (String player : playerContents.getKeys(false)) {
+                contentsByPlayer.put(
+                        playerUniqueId(player, "player-contents." + player),
+                        decode(playerContents, player)
+                );
+            }
+            record.setPlayerContents(contentsByPlayer);
+        }
+        return record;
     }
 
     private Map<String, Object> serialize(Collection<MagicChestRecord> currentRecords) {
@@ -246,6 +266,14 @@ final class MagicChestStore implements AutoCloseable {
         chest.put("template", ItemStackArrayCodec.serialize(record.templateCopy()));
         chest.put("draft", ItemStackArrayCodec.serialize(record.draftCopy()));
         chest.put("live", ItemStackArrayCodec.serialize(record.liveCopy()));
+        Map<String, Object> playerContents = new LinkedHashMap<>();
+        record.playerContentsCopy().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> playerContents.put(
+                        entry.getKey().toString(),
+                        ItemStackArrayCodec.serialize(entry.getValue())
+                ));
+        chest.put("player-contents", playerContents);
         return chest;
     }
 

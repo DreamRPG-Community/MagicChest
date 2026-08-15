@@ -2,17 +2,15 @@ package cn.mythicland.magicchest;
 
 import cn.mythicland.lib.container.ContainerAnimationHandle;
 import org.bukkit.inventory.Inventory;
-import org.bukkit.inventory.ItemStack;
 
 import java.util.Objects;
 
 /**
- * Tracks one private native inventory and its delayed post-event snapshot.
+ * Tracks one private native inventory session.
  */
 final class MagicChestInventorySession {
 
     private final MagicChestInventoryHolder holder;
-    private ItemStack[] pendingBaseline;
     private ContainerAnimationHandle animation;
 
     MagicChestInventorySession(MagicChestInventoryHolder holder) {
@@ -30,19 +28,6 @@ final class MagicChestInventorySession {
 
     boolean editor() {
         return holder.editor();
-    }
-
-    ItemStack[] pendingBaseline() {
-        return pendingBaseline;
-    }
-
-    void beginMutation(ItemStack[] baseline) {
-        Objects.requireNonNull(baseline, "baseline");
-        if (pendingBaseline == null) pendingBaseline = MagicChestRecord.copyContents(baseline);
-    }
-
-    void clearMutation() {
-        pendingBaseline = null;
     }
 
     void attachAnimation(ContainerAnimationHandle animation) {

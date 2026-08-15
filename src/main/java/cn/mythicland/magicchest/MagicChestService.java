@@ -1,5 +1,8 @@
 package cn.mythicland.magicchest;
 
+import cn.mythicland.lib.admin.AdminPanelProvider;
+import cn.mythicland.lib.admin.AdminPanelRegistration;
+import cn.mythicland.lib.admin.AdminPanelService;
 import cn.mythicland.lib.bootstrap.LibPluginLifecycle;
 import cn.mythicland.lib.bootstrap.PluginTaskScope;
 import cn.mythicland.lib.bootstrap.annotation.LifecycleComponent;
@@ -56,6 +59,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
 
     private final PluginTaskScope tasks;
     private final MenuService menus;
+    private final AdminPanelService adminPanels;
     private final ContainerAnimationService animations;
     private final FloatingTextService floatingText;
     private final MagicChestSettings settings;
@@ -68,10 +72,12 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     private final Map<MagicChestKey, FloatingTextHandle> holograms = new HashMap<>();
     private final Map<MagicChestKey, FloatingTextSpec> hologramSpecifications = new HashMap<>();
     private final Map<MagicChestKey, Location> hologramLocations = new HashMap<>();
+    private final Set<MagicChestInventorySession> pendingNativeMutations =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private BukkitTask tickTask;
     private BukkitTask particleTask;
     private BukkitTask nativeFlushTask;
-    private MagicChestInventorySession pendingNativeMutation;
+    private AdminPanelRegistration adminPanelRegistration;
 
     /**
      * Creates the injected MagicChest service.
@@ -79,6 +85,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     MagicChestService(
             PluginTaskScope tasks,
             MenuService menus,
+            AdminPanelService adminPanels,
             ContainerAnimationService animations,
             FloatingTextService floatingText,
             MagicChestSettings settings,
@@ -87,6 +94,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     ) {
         this.tasks = Objects.requireNonNull(tasks, "tasks");
         this.menus = Objects.requireNonNull(menus, "menus");
+        this.adminPanels = Objects.requireNonNull(adminPanels, "adminPanels");
         this.animations = Objects.requireNonNull(animations, "animations");
         this.floatingText = Objects.requireNonNull(floatingText, "floatingText");
         this.settings = Objects.requireNonNull(settings, "settings");
@@ -140,7 +148,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         return result;
     }
 
-    private static ItemStack[] viewContents(ItemStack[] storageContents, int size) {
+    static ItemStack[] viewContents(ItemStack[] storageContents, int size) {
         Objects.requireNonNull(storageContents, "storageContents");
         if (storageContents.length != MagicChestRecord.STORAGE_SIZE) {
             throw new IllegalArgumentException("storageContents must contain exactly 54 slots");
@@ -161,27 +169,6 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
             if (!sameStack(first[index], second[index])) return false;
         }
         return true;
-    }
-
-    static boolean applyNativeChanges(
-            MagicChestRecord record,
-            ItemStack[] baseline,
-            ItemStack[] current
-    ) {
-        Objects.requireNonNull(record, "record");
-        Objects.requireNonNull(baseline, "baseline");
-        Objects.requireNonNull(current, "current");
-        if (baseline.length != MagicChestRecord.STORAGE_SIZE
-                || current.length != MagicChestRecord.STORAGE_SIZE) {
-            throw new IllegalArgumentException("native inventory snapshots must contain exactly 54 slots");
-        }
-        boolean changed = false;
-        for (int slot = 0; slot < record.size().slots(); slot++) {
-            if (sameStack(baseline[slot], current[slot])) continue;
-            record.setLiveItem(slot, current[slot]);
-            changed = true;
-        }
-        return changed;
     }
 
     static boolean isChest(Block block) {
@@ -214,6 +201,38 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     public void enable() {
         animations.verifyCompatibility();
         floatingText.verifyCompatibility();
+        cleanupMissingAnchors();
+        adminPanelRegistration = adminPanels.register(new AdminPanelProvider() {
+            @Override
+            public String id() {
+                return "magicchest";
+            }
+
+            @Override
+            public String displayName() {
+                return "&aMagicChest 箱子";
+            }
+
+            @Override
+            public Material icon() {
+                return Material.CHEST;
+            }
+
+            @Override
+            public List<String> description() {
+                return List.of("&7管理这个箱子的刷新和领取设置。");
+            }
+
+            @Override
+            public boolean supports(Player player, Block block) {
+                return player.hasPermission(ADMIN_PERMISSION) && isChest(block);
+            }
+
+            @Override
+            public void open(Player player, Block block) {
+                openManagement(player, block);
+            }
+        });
         for (MagicChestRecord record : store.all()) {
             record.refreshPolicy(settings.snapshot());
             if (record.nextRefreshEpochSecond() == 0L) {
@@ -237,6 +256,10 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
 
     @Override
     public void disable() {
+        if (adminPanelRegistration != null) {
+            adminPanelRegistration.close();
+            adminPanelRegistration = null;
+        }
         tasks.cancel(tickTask);
         tickTask = null;
         tasks.cancel(particleTask);
@@ -302,6 +325,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
             ItemStack[] live = record.liveCopy();
             ItemStack[] oldDraft = record.draftCopy();
             ItemStack[] oldLive = record.liveCopy();
+            Map<UUID, ItemStack[]> oldPlayerContents = record.playerContentsCopy();
             ItemStack[] template = record.templateCopy();
             boolean recordChanged = false;
 
@@ -358,7 +382,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
                 }
             }
 
-            updates.add(new RecordSync(record, oldTemplate, oldDraft, oldLive,
+            updates.add(new RecordSync(record, oldTemplate, oldDraft, oldLive, oldPlayerContents,
                     template, draft, live, recordChanged));
         }
 
@@ -367,6 +391,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
                 update.record().setTemplate(update.template());
                 update.record().setDraft(update.draft());
                 update.record().setLiveContents(update.live());
+                update.record().reconcilePlayerContents(update.oldLive(), update.live());
             }
             for (RecordSync update : updates) {
                 if (update.changed()) {
@@ -395,6 +420,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
                 update.record().setTemplate(update.oldTemplate());
                 update.record().setDraft(update.oldDraft());
                 update.record().setLiveContents(update.oldLive());
+                update.record().setPlayerContents(update.oldPlayerContents());
             }
             for (RecordSync update : updates) {
                 if (update.changed()) updateOpenInventories(
@@ -418,11 +444,13 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         int updated = 0;
         for (MagicChestInventorySession session : List.copyOf(nativeInventorySessions.values())) {
             if (!record.key().equals(session.holder().key())) continue;
-            ItemStack[] contents = session.editor() ? draft : live;
+            ItemStack[] contents = session.editor()
+                    ? draft
+                    : Optional.ofNullable(record.playerContentsCopy(session.holder().viewerUniqueId()))
+                    .orElse(live);
             Inventory inventory = session.inventory();
             if (inventory.getSize() != record.size().slots()) continue;
             inventory.setContents(viewContents(contents, inventory.getSize()));
-            session.clearMutation();
             updated++;
             Player player = Bukkit.getPlayer(session.holder().viewerUniqueId());
             if (player != null && player.getOpenInventory().getTopInventory() == inventory) {
@@ -432,7 +460,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         return updated;
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
         if (event.getHand() != null && event.getHand() != EquipmentSlot.HAND) return;
         Block block = event.getClickedBlock();
@@ -498,12 +526,14 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         if (session != null) finishNativeSession(session);
     }
 
-    @EventHandler(
-            priority = EventPriority.MONITOR,
-            ignoreCancelled = true
-    )
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBreak(BlockBreakEvent event) {
-        removeIfManaged(MagicChestKey.from(event.getBlock()), "箱子被破坏, MagicChest 管理记录已删除。", event.getPlayer());
+        MagicChestKey key = MagicChestKey.from(event.getBlock());
+        if (store.find(key) == null) return;
+        // A managed chest is an anchor for persistent data. Players must remove it from the
+        // administrator panel; breaking the physical block, including Shift+left-click, is a
+        // silent no-op and must not delete the record.
+        event.setCancelled(true);
     }
 
     @EventHandler(
@@ -551,7 +581,6 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
             menus.open(player, menu);
             openSessions.put(player.getUniqueId(), key);
             managementViewers.computeIfAbsent(key, ignored -> new HashSet<>()).add(player.getUniqueId());
-            menu.attachAnimation(animations.open(sourceBlock, player, ContainerAnimationSpec.enderChest()));
         } catch (RuntimeException exception) {
             menus.close(player);
             logger.log(Level.SEVERE, "Failed to open MagicChest management menu", exception);
@@ -559,10 +588,23 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         }
     }
 
+    void openAdminOverview(Player player, MagicChestKey key) {
+        requireAdmin(player);
+        World world = Bukkit.getWorld(key.worldId());
+        if (world == null) {
+            menus.close(player);
+            player.sendMessage(LegacyText.colorize("&c箱子所在世界当前不可用。"));
+            return;
+        }
+        adminPanels.openOverview(player, world.getBlockAt(key.x(), key.y(), key.z()));
+    }
+
     private void openClaim(Player player, Block sourceBlock, MagicChestRecord record) {
         MagicChestKey key = record.key();
         try {
-            openNativeInventory(player, key, sourceBlock, false, record.liveCopy());
+            ItemStack[] contents = record.playerContentsCopy(player.getUniqueId());
+            if (contents == null) contents = record.liveCopy();
+            openNativeInventory(player, key, sourceBlock, false, contents);
         } catch (RuntimeException exception) {
             closeNativeInventory(player);
             logger.log(Level.SEVERE, "Failed to open MagicChest claim menu", exception);
@@ -775,6 +817,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
                 LegacyText.colorize(editor ? "&8箱子(编辑状态)" : "&8箱子")
         );
         holder.attach(inventory);
+        // Claim views are private snapshots; editor changes go to the draft and claim changes go to player state.
         inventory.setContents(viewContents(contents, inventory.getSize()));
         MagicChestInventorySession session = new MagicChestInventorySession(holder);
         nativeInventorySessions.put(player.getUniqueId(), session);
@@ -804,9 +847,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     }
 
     private boolean beginNativeMutation(MagicChestInventorySession session) {
-        if (pendingNativeMutation != null && pendingNativeMutation != session) return false;
-        session.beginMutation(capture(session.inventory()));
-        pendingNativeMutation = session;
+        pendingNativeMutations.add(session);
         if (nativeFlushTask == null) {
             nativeFlushTask = tasks.runLater(1L, () -> {
                 nativeFlushTask = null;
@@ -817,62 +858,40 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     }
 
     private void flushPendingNativeMutation() {
-        MagicChestInventorySession session = pendingNativeMutation;
-        pendingNativeMutation = null;
-        if (session == null) return;
-        if (nativeInventorySessions.get(session.holder().viewerUniqueId()) != session) {
-            session.clearMutation();
-            return;
+        Set<MagicChestInventorySession> pending = Set.copyOf(pendingNativeMutations);
+        pendingNativeMutations.clear();
+        if (pending.isEmpty()) return;
+        boolean changed = false;
+        Set<MagicChestKey> managementMenusToRefresh = new HashSet<>();
+        for (MagicChestInventorySession session : pending) {
+            if (nativeInventorySessions.get(session.holder().viewerUniqueId()) != session) continue;
+            MagicChestRecord record = store.find(session.holder().key());
+            if (record == null) continue;
+            if (!captureNativeSession(session, record)) continue;
+            changed = true;
+            if (session.editor()) managementMenusToRefresh.add(record.key());
         }
-        MagicChestRecord record = store.find(session.holder().key());
-        if (record == null) {
-            session.clearMutation();
-            return;
-        }
-        boolean changed = captureNativeSession(session, record);
-        if (changed) commitNativeMutation(session, record);
+        if (!changed) return;
+        persist();
+        managementMenusToRefresh.forEach(this::refreshManagementMenus);
     }
 
     private boolean captureNativeSession(MagicChestInventorySession session, MagicChestRecord record) {
-        if (session.editor()) {
+        if (!session.editor()) {
+            UUID playerUniqueId = session.holder().viewerUniqueId();
+            ItemStack[] previous = record.playerContentsCopy(playerUniqueId);
             ItemStack[] current = capture(session.inventory());
-            ItemStack[] previous = record.draftCopy();
-            record.setDraft(current);
-            session.clearMutation();
-            return !sameContents(previous, current);
+            boolean matchesSharedContents = sameContents(record.liveCopy(), current);
+            if (matchesSharedContents) record.removePlayerContents(playerUniqueId);
+            else record.setPlayerContents(playerUniqueId, current);
+            return previous == null
+                    ? !matchesSharedContents
+                    : matchesSharedContents || !sameContents(previous, current);
         }
-        ItemStack[] baseline = session.pendingBaseline();
-        if (baseline == null) return false;
         ItemStack[] current = capture(session.inventory());
-        session.clearMutation();
-        return applyNativeChanges(record, baseline, current);
-    }
-
-    private void commitNativeMutation(MagicChestInventorySession session, MagicChestRecord record) {
-        persist();
-        if (session.editor()) {
-            refreshManagementMenus(record.key());
-            return;
-        }
-        refreshClaimInventories(record.key());
-        updateDisplay(record, Instant.now());
-    }
-
-    private void refreshClaimInventories(MagicChestKey key) {
-        MagicChestRecord record = store.find(key);
-        if (record == null) return;
-        ItemStack[] live = record.liveCopy();
-        for (MagicChestInventorySession session : List.copyOf(nativeInventorySessions.values())) {
-            if (session.editor() || !key.equals(session.holder().key())) continue;
-            Inventory inventory = session.inventory();
-            if (inventory.getSize() != record.size().slots()) continue;
-            inventory.setContents(viewContents(live, inventory.getSize()));
-            session.clearMutation();
-            Player player = Bukkit.getPlayer(session.holder().viewerUniqueId());
-            if (player != null && player.getOpenInventory().getTopInventory() == inventory) {
-                player.updateInventory();
-            }
-        }
+        ItemStack[] previous = record.draftCopy();
+        record.setDraft(current);
+        return !sameContents(previous, current);
     }
 
     private void cancelNativeFlush() {
@@ -883,9 +902,8 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
     private void finishNativeSession(MagicChestInventorySession session) {
         UUID viewerUniqueId = session.holder().viewerUniqueId();
         if (!nativeInventorySessions.remove(viewerUniqueId, session)) return;
-        if (pendingNativeMutation == session) {
+        if (pendingNativeMutations.remove(session) && pendingNativeMutations.isEmpty()) {
             cancelNativeFlush();
-            pendingNativeMutation = null;
         }
         MagicChestRecord record = store.find(session.holder().key());
         boolean changed = record != null && captureNativeSession(session, record);
@@ -914,7 +932,6 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         if (refreshed) record.refreshNow(settings.snapshot(), now);
         if (changed || refreshed) {
             persist();
-            refreshClaimInventories(key);
             updateDisplay(record, now);
         }
     }
@@ -1101,6 +1118,27 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
         store.save(store.all());
     }
 
+    /**
+     * Removes records whose configured anchor no longer contains a real chest block.
+     *
+     * <p>This runs after the store is loaded and before display/tick state is initialized, so a
+     * stale configuration entry cannot recreate a hologram or participate in refresh logic.</p>
+     */
+    private void cleanupMissingAnchors() {
+        List<MagicChestKey> stale = new ArrayList<>();
+        for (MagicChestRecord record : store.all()) {
+            MagicChestKey key = record.key();
+            World world = Bukkit.getWorld(key.worldId());
+            if (world == null || !isChest(world.getBlockAt(key.x(), key.y(), key.z()))) {
+                stale.add(key);
+            }
+        }
+        if (stale.isEmpty()) return;
+        for (MagicChestKey key : stale) store.remove(key);
+        persist();
+        logger.info("Removed " + stale.size() + " MagicChest record(s) without a physical chest anchor.");
+    }
+
     private void requirePrimaryThread() {
         if (!Bukkit.isPrimaryThread()) {
             throw new IllegalStateException("MagicChest API must run on Bukkit's primary thread");
@@ -1136,6 +1174,7 @@ public final class MagicChestService implements MagicChestApi, Listener, LibPlug
             ItemStack[] oldTemplate,
             ItemStack[] oldDraft,
             ItemStack[] oldLive,
+            Map<UUID, ItemStack[]> oldPlayerContents,
             ItemStack[] template,
             ItemStack[] draft,
             ItemStack[] live,

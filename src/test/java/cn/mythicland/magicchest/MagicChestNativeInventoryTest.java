@@ -1,8 +1,6 @@
 package cn.mythicland.magicchest;
 
 import cn.mythicland.magicchest.api.MagicChestKey;
-import cn.mythicland.magicchest.api.MagicChestSize;
-import cn.mythicland.magicchest.api.RefreshMode;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
 import org.junit.jupiter.api.Test;
@@ -12,30 +10,26 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Covers native inventory snapshot reconciliation and private per-view identity.
+ * Covers private claim views and per-view inventory identity.
  */
 class MagicChestNativeInventoryTest {
 
     @Test
-    void nativeSnapshotAppliesOnlyChangedTopSlots() {
-        MagicChestRecord record = newRecord();
-        record.setLiveItem(0, new ItemStack(Material.DIAMOND, 10));
+    void eachClaimViewerReceivesAnIndependentContentsCopy() {
+        ItemStack[] source = MagicChestRecord.emptyContents();
+        source[0] = new ItemStack(Material.DIAMOND, 10);
 
-        ItemStack[] baseline = record.liveCopy();
-        ItemStack[] current = MagicChestRecord.copyContents(baseline);
-        current[0] = null;
-        current[27] = new ItemStack(Material.GOLD_INGOT, 1);
+        ItemStack[] firstViewer = MagicChestService.viewContents(source, 27);
+        ItemStack[] secondViewer = MagicChestService.viewContents(source, 27);
+        firstViewer[0].setAmount(1);
+        firstViewer[1] = new ItemStack(Material.GOLD_INGOT, 1);
 
-        boolean changed = MagicChestService.applyNativeChanges(record, baseline, current);
-
-        assertTrue(changed);
-        assertNull(record.liveItem(0));
-        assertNull(record.liveItem(1));
-        assertEquals(Material.GOLD_INGOT, current[27].getType());
-        assertNull(record.liveItem(27));
+        assertEquals(10, source[0].getAmount());
+        assertEquals(10, secondViewer[0].getAmount());
+        assertEquals(Material.GOLD_INGOT, firstViewer[1].getType());
+        assertNull(secondViewer[1]);
     }
 
     @Test
@@ -46,22 +40,5 @@ class MagicChestNativeInventoryTest {
 
         assertNotSame(first, second);
         assertNotSame(first.viewerUniqueId(), second.viewerUniqueId());
-    }
-
-    private static MagicChestRecord newRecord() {
-        return new MagicChestRecord(
-                new MagicChestKey(UUID.randomUUID(), 1, 64, 2),
-                MagicChestSize.SMALL,
-                RefreshMode.INTERVAL,
-                "1m",
-                "00:00",
-                "NONE",
-                false,
-                false,
-                1L,
-                MagicChestRecord.emptyContents(),
-                MagicChestRecord.emptyContents(),
-                MagicChestRecord.emptyContents()
-        );
     }
 }

@@ -122,6 +122,55 @@ class MagicChestRecordTest {
     }
 
     @Test
+    void refreshReplacesOccupiedSlotsButPreservesPlayerItemsInEmptySlots() {
+        MagicChestRecord record = newRecord();
+        UUID firstPlayer = UUID.randomUUID();
+        UUID secondPlayer = UUID.randomUUID();
+        ItemStack[] template = record.templateCopy();
+        template[0] = new ItemStack(Material.DIAMOND, 10);
+        record.setTemplate(template);
+        record.setLiveItem(0, new ItemStack(Material.DIRT, 64));
+
+        ItemStack[] firstContents = record.liveCopy();
+        firstContents[0] = new ItemStack(Material.GOLD_INGOT, 2);
+        firstContents[5] = new ItemStack(Material.EMERALD, 3);
+        record.setPlayerContents(firstPlayer, firstContents);
+
+        assertNull(record.playerContentsCopy(secondPlayer));
+        assertEquals(Material.GOLD_INGOT, record.playerContentsCopy(firstPlayer)[0].getType());
+        assertEquals(Material.EMERALD, record.playerContentsCopy(firstPlayer)[5].getType());
+
+        record.refreshNow(SETTINGS, Instant.parse("2026-08-08T04:00:00Z"));
+
+        ItemStack[] refreshedPlayerContents = record.playerContentsCopy(firstPlayer);
+        assertEquals(Material.DIAMOND, refreshedPlayerContents[0].getType());
+        assertEquals(10, refreshedPlayerContents[0].getAmount());
+        assertEquals(Material.EMERALD, refreshedPlayerContents[5].getType());
+        assertEquals(3, refreshedPlayerContents[5].getAmount());
+        assertEquals(10, record.liveItem(0).getAmount());
+    }
+
+    @Test
+    void twoPlayersKeepSeparateClaimProgress() {
+        MagicChestRecord record = newRecord();
+        UUID firstPlayer = UUID.randomUUID();
+        UUID secondPlayer = UUID.randomUUID();
+        record.setLiveItem(0, new ItemStack(Material.DIAMOND, 10));
+
+        ItemStack[] firstContents = record.liveCopy();
+        firstContents[0] = null;
+        record.setPlayerContents(firstPlayer, firstContents);
+
+        ItemStack[] secondContents = record.liveCopy();
+        secondContents[0].setAmount(4);
+        record.setPlayerContents(secondPlayer, secondContents);
+
+        assertNull(record.playerContentsCopy(firstPlayer)[0]);
+        assertEquals(4, record.playerContentsCopy(secondPlayer)[0].getAmount());
+        assertEquals(10, record.liveItem(0).getAmount());
+    }
+
+    @Test
     void neverModeDoesNotScheduleAutomaticRefresh() {
         MagicChestRecord record = new MagicChestRecord(
                 new MagicChestKey(UUID.randomUUID(), 1, 64, 2),
@@ -143,6 +192,27 @@ class MagicChestRecordTest {
 
         assertEquals(0L, record.nextRefreshEpochSecond());
         assertFalse(record.isDue(now.plus(Duration.ofDays(1))));
+    }
+
+    @Test
+    void neverModeIgnoresAStalePersistedNextRefreshTime() {
+        MagicChestRecord record = new MagicChestRecord(
+                new MagicChestKey(UUID.randomUUID(), 1, 64, 2),
+                true,
+                MagicChestSize.SMALL,
+                cn.mythicland.magicchest.api.RefreshMode.NEVER,
+                "1m",
+                "00:00",
+                "NONE",
+                false,
+                false,
+                1L,
+                MagicChestRecord.emptyContents(),
+                MagicChestRecord.emptyContents(),
+                MagicChestRecord.emptyContents()
+        );
+
+        assertFalse(record.isDue(Instant.parse("2026-08-08T04:00:00Z")));
     }
 
     @Test

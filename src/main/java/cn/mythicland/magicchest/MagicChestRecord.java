@@ -6,6 +6,8 @@ import org.bukkit.inventory.ItemStack;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -17,6 +19,7 @@ final class MagicChestRecord {
     static final int STORAGE_SIZE = 54;
 
     private final MagicChestKey key;
+    private final Map<UUID, ItemStack[]> playerContents = new LinkedHashMap<>();
     private boolean refreshEnabled;
     private MagicChestSize size;
     private RefreshMode refreshMode;
@@ -268,7 +271,10 @@ final class MagicChestRecord {
     }
 
     boolean isDue(Instant now) {
-        return refreshEnabled && nextRefreshEpochSecond > 0L && now.getEpochSecond() >= nextRefreshEpochSecond;
+        return refreshEnabled
+                && refreshMode != RefreshMode.NEVER
+                && nextRefreshEpochSecond > 0L
+                && now.getEpochSecond() >= nextRefreshEpochSecond;
     }
 
     void refreshNow(MagicChestSettings.Snapshot settings, Instant now) {
@@ -277,7 +283,16 @@ final class MagicChestRecord {
             if (!isEmpty(template[slot])) refreshedContents[slot] = cloneItem(template[slot]);
         }
         liveContents = refreshedContents;
+        reconcilePlayerContentsAfterRefresh(refreshedContents);
         recalculateNextRefresh(settings, now);
+    }
+
+    private void reconcilePlayerContentsAfterRefresh(ItemStack[] refreshedContents) {
+        for (ItemStack[] contents : playerContents.values()) {
+            for (int slot = 0; slot < STORAGE_SIZE; slot++) {
+                if (!isEmpty(refreshedContents[slot])) contents[slot] = cloneItem(refreshedContents[slot]);
+            }
+        }
     }
 
     ItemStack[] templateCopy() {
@@ -304,6 +319,50 @@ final class MagicChestRecord {
         return copyContents(liveContents);
     }
 
+    ItemStack[] playerContentsCopy(UUID playerUniqueId) {
+        Objects.requireNonNull(playerUniqueId, "playerUniqueId");
+        ItemStack[] contents = playerContents.get(playerUniqueId);
+        return contents == null ? null : copyContents(contents);
+    }
+
+    Map<UUID, ItemStack[]> playerContentsCopy() {
+        Map<UUID, ItemStack[]> copy = new LinkedHashMap<>();
+        playerContents.forEach((playerUniqueId, contents) -> copy.put(playerUniqueId, copyContents(contents)));
+        return copy;
+    }
+
+    void setPlayerContents(UUID playerUniqueId, ItemStack[] contents) {
+        Objects.requireNonNull(playerUniqueId, "playerUniqueId");
+        playerContents.put(playerUniqueId, fixedCopy(contents, "playerContents"));
+    }
+
+    void removePlayerContents(UUID playerUniqueId) {
+        playerContents.remove(Objects.requireNonNull(playerUniqueId, "playerUniqueId"));
+    }
+
+    void setPlayerContents(Map<UUID, ItemStack[]> contentsByPlayer) {
+        Objects.requireNonNull(contentsByPlayer, "contentsByPlayer");
+        playerContents.clear();
+        contentsByPlayer.forEach(this::setPlayerContents);
+    }
+
+    void reconcilePlayerContents(ItemStack[] previousLive, ItemStack[] currentLive) {
+        fixedCopy(previousLive, "previousLive");
+        fixedCopy(currentLive, "currentLive");
+        for (ItemStack[] contents : playerContents.values()) {
+            for (int slot = 0; slot < STORAGE_SIZE; slot++) {
+                ItemStack playerItem = contents[slot];
+                ItemStack previousItem = previousLive[slot];
+                ItemStack currentItem = currentLive[slot];
+                if (isEmpty(playerItem) || isEmpty(previousItem) || isEmpty(currentItem)
+                        || !playerItem.isSimilar(previousItem)) continue;
+                ItemStack replacement = currentItem.clone();
+                replacement.setAmount(Math.min(playerItem.getAmount(), replacement.getMaxStackSize()));
+                contents[slot] = replacement;
+            }
+        }
+    }
+
     ItemStack liveItem(int slot) {
         checkSlot(slot);
         return cloneItem(liveContents[slot]);
@@ -324,6 +383,11 @@ final class MagicChestRecord {
     boolean hasItemsOutside(MagicChestSize candidateSize) {
         for (int slot = candidateSize.slots(); slot < STORAGE_SIZE; slot++) {
             if (!isEmpty(template[slot]) || !isEmpty(draft[slot]) || !isEmpty(liveContents[slot])) return true;
+        }
+        for (ItemStack[] contents : playerContents.values()) {
+            for (int slot = candidateSize.slots(); slot < STORAGE_SIZE; slot++) {
+                if (!isEmpty(contents[slot])) return true;
+            }
         }
         return false;
     }
